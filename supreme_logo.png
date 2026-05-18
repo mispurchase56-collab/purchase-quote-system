@@ -1,0 +1,4 @@
+# The logo image data was provided as an attachment. 
+# I will use the image path from the environment if available, 
+# or I will assume the image is already in the workspace if I can find it.
+# Actually, I can use the image from the artifact directory if I save it there.
