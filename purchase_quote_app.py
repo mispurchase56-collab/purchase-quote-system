@@ -31,15 +31,21 @@ def get_gspread_client():
     try:
         import json
         
-        # Check Streamlit Secrets first (for cloud hosting like streamlit.app)
-        if "gcp_service_account" in st.secrets:
-            creds_info = dict(st.secrets["gcp_service_account"])
-        elif os.path.exists(CREDENTIALS_PATH):
+        # 1. Check local file first (to prevent local Streamlit from raising an exception when secrets are empty)
+        if os.path.exists(CREDENTIALS_PATH):
             with open(CREDENTIALS_PATH, 'r') as f:
                 creds_info = json.load(f)
+        # 2. Fall back to Streamlit Secrets (for cloud hosting like streamlit.app)
         else:
-            st.error("❌ Missing credentials! Set st.secrets['gcp_service_account'] or provide credentials.json")
-            return None
+            try:
+                if "gcp_service_account" in st.secrets:
+                    creds_info = dict(st.secrets["gcp_service_account"])
+                else:
+                    st.error("❌ Missing credentials! Set st.secrets['gcp_service_account'] or provide credentials.json")
+                    return None
+            except Exception as e:
+                st.error("❌ Missing credentials! Please provide credentials.json locally or configure Streamlit Secrets.")
+                return None
         
         # AUTO-FIX: The private key often gets messed up with literal '\n' strings
         if 'private_key' in creds_info:
@@ -124,6 +130,7 @@ REQUIRED_COLS = [
     "S.No", "ERP Code", "Vendor Item No", "Product Description",
     "Qty", "Price Before GST", "GST %", "Price Inc. GST", "Total (Incl. GST)", "Remarks",
     "Freight Charge", "Status", "Created Date", "Modified Date",
+    "Payment Method", "Mode of Delivery",
 ]
 
 LOCAL_EXCEL_PATH = "Purchase_Quotes_Data.xlsx"
@@ -146,24 +153,40 @@ def load_quotes() -> pd.DataFrame:
     return pd.DataFrame(columns=REQUIRED_COLS)
 
 def save_quotes(new_df: pd.DataFrame, is_edit: bool = False, quote_no: str = None):
+    # Enforce perfect column alignment to REQUIRED_COLS
+    for col in REQUIRED_COLS:
+        if col not in new_df.columns:
+            new_df[col] = ""
+    new_df = new_df[REQUIRED_COLS]
+
     # 1. Try Google Sheets Saving
     if gc:
         try:
             sh = gc.open_by_key(DATABASE_SPREADSHEET_ID)
             ws = sh.worksheet("Purchase Quotes")
+            
+            # Ensure Google Sheet headers match REQUIRED_COLS exactly
+            headers = ws.row_values(1)
+            if not headers:
+                ws.append_row(REQUIRED_COLS)
+            elif len(headers) < len(REQUIRED_COLS):
+                ws.update('A1', [REQUIRED_COLS])
+                
             if is_edit and quote_no:
                 all_data = ws.get_all_records()
                 full_df = pd.DataFrame(all_data)
+                
+                # Align existing data columns
+                for col in REQUIRED_COLS:
+                    if col not in full_df.columns:
+                        full_df[col] = ""
+                full_df = full_df[REQUIRED_COLS]
+                
                 full_df = full_df[full_df["Quote No"] != quote_no]
                 full_df = pd.concat([full_df, new_df], ignore_index=True)
                 ws.clear()
                 ws.update([full_df.columns.values.tolist()] + full_df.values.tolist())
             else:
-                headers = ws.row_values(1)
-                if not headers:
-                    ws.append_row(REQUIRED_COLS)
-                elif len(headers) < len(REQUIRED_COLS):
-                    ws.update('A1', [REQUIRED_COLS])
                 ws.append_rows(new_df.values.tolist())
             return True
         except Exception as e:
@@ -1180,6 +1203,12 @@ def page_create_quote():
             
             if final_rows:
                 new_df = pd.DataFrame(final_rows)
+                # Align columns to REQUIRED_COLS to prevent misaligned database inserts
+                for col in REQUIRED_COLS:
+                    if col not in new_df.columns:
+                        new_df[col] = ""
+                new_df = new_df[REQUIRED_COLS]
+                
                 if save_quotes(new_df, is_edit=edit_mode, quote_no=quote_no):
                     st.success(f"✅ Quote **{quote_no}** {'updated' if edit_mode else 'submitted'} successfully!")
                     # Clear session state if it was a new quote, keep it if it was an edit so buttons are visible?
