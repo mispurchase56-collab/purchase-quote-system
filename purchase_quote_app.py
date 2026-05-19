@@ -277,10 +277,10 @@ div[data-testid="metric-container"] div[data-testid="stMetricValue"] {
     margin-bottom: 18px;
 }
 
-/* Buttons */
-.stButton > button {
+/* Buttons & Download Buttons */
+.stButton > button, .stDownloadButton > button {
     background: linear-gradient(135deg, #0ea5e9, #6366f1);
-    color: white;
+    color: white !important;
     border: none;
     border-radius: 8px;
     padding: 0.5rem 1.8rem;
@@ -288,7 +288,7 @@ div[data-testid="metric-container"] div[data-testid="stMetricValue"] {
     font-size: 15px;
     transition: opacity .2s;
 }
-.stButton > button:hover { opacity: 0.88; }
+.stButton > button:hover, .stDownloadButton > button:hover { opacity: 0.88; }
 
 /* Table */
 .stDataFrame { border-radius: 10px; overflow: hidden; }
@@ -311,7 +311,7 @@ div[data-testid="stNumberInput"] input:disabled {
 
 # ── Session state defaults ───────────────────────────────────
 if "role" not in st.session_state:
-    st.session_state.role = "Salesperson"
+    st.session_state.role = "Product manager / product team"
 if "line_items" not in st.session_state:
     st.session_state.line_items = []
 if "edit_quote_no" not in st.session_state:
@@ -330,12 +330,6 @@ with st.sidebar:
         pass
     
     st.markdown("## 📋 Purchase Quote System")
-    st.markdown("---")
-    st.session_state.role = st.radio(
-        "Login As",
-        ["Product manager / product team", "Admin / Purchase Team"],
-        index=0 if st.session_state.role == "Product manager / product team" else 1,
-    )
     st.markdown("---")
     # Both roles now use "Create / Edit Quote" as the primary workspace
     pages = ["Dashboard", "Create / Edit Quote", "View Quotes"]
@@ -743,64 +737,230 @@ def export_po_pdf(quote_no: str, df: pd.DataFrame) -> io.BytesIO:
 
 # ── DASHBOARD ───────────────────────────────────────────────
 def page_dashboard():
+    import matplotlib.pyplot as plt
+    import matplotlib
+    matplotlib.use("Agg")
+
     # Full View Logo at the top
     try:
         st.image("logo.png", use_container_width=True)
     except:
         pass
-    
-    st.markdown('<div class="section-header">📊 Executive Dashboard</div>', unsafe_allow_html=True)
+
+    # ── Premium Header Bar ──
+    st.markdown("""
+    <div style="background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 100%); padding: 18px 28px; border-radius: 14px; margin-bottom: 18px;">
+        <span style="color: #ffffff; font-size: 1.5rem; font-weight: 700; letter-spacing: 0.5px;">📊 Purchase Quote Executive Dashboard</span>
+    </div>
+    """, unsafe_allow_html=True)
     df = load_quotes()
 
-    total   = len(df["Quote No"].dropna().unique()) if not df.empty else 0
-    pending = len(df[df["Status"] == "Pending Approval"]) if not df.empty else 0
-    approved= len(df[df["Status"] == "Approved"]) if not df.empty else 0
-    modified= len(df[df["Status"] == "Modified"]) if not df.empty else 0
+    if df.empty:
+        st.info("No quotes found. Create your first quote!")
+        return
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total Quotes", total)
-    c2.metric("Pending Approval", pending)
-    c3.metric("Approved", approved)
-    c4.metric("Modified", modified)
+    # Prepare data
+    df_temp = df.copy()
+    df_temp["Qty_num"] = pd.to_numeric(df_temp["Qty"], errors="coerce").fillna(0.0)
+    df_temp["Price_Inc_num"] = pd.to_numeric(df_temp["Price Inc. GST"], errors="coerce").fillna(0.0)
+    df_temp["Line_Total_Inc"] = df_temp["Qty_num"] * df_temp["Price_Inc_num"]
+    df_temp["Created_DT"] = pd.to_datetime(df_temp["Created Date"], errors="coerce")
+
+    # ── Filter Row ──
+    fc1, fc2, fc3, fc4 = st.columns(4)
+    with fc1:
+        date_opt = st.selectbox("📅 Time Period", ["All Time", "Today", "This Week", "This Month", "This Year", "Custom Range"])
+    with fc2:
+        unique_vendors = ["All Vendors"] + sorted(df["Vendor Name"].dropna().unique().tolist())
+        sel_vendor = st.selectbox("🏢 Vendor", unique_vendors)
+    with fc3:
+        unique_locs = ["All Locations"] + sorted(df["Location Code"].dropna().unique().tolist())
+        sel_loc = st.selectbox("📍 Location", unique_locs)
+    with fc4:
+        unique_purchasers = ["All Purchasers"] + sorted(df["Purchase Quote raised by"].dropna().unique().tolist())
+        sel_purchaser = st.selectbox("👤 Purchaser", unique_purchasers)
+
+    start_date, end_date = None, None
+    if date_opt == "Custom Range":
+        custom_range = st.date_input("Select Date Range", value=(date.today(), date.today()))
+        if isinstance(custom_range, tuple) and len(custom_range) == 2:
+            start_date, end_date = custom_range
+    elif date_opt == "Today":
+        start_date = end_date = date.today()
+    elif date_opt == "This Week":
+        start_date = date.today() - pd.Timedelta(days=date.today().weekday()); end_date = date.today()
+    elif date_opt == "This Month":
+        start_date = date(date.today().year, date.today().month, 1); end_date = date.today()
+    elif date_opt == "This Year":
+        start_date = date(date.today().year, 1, 1); end_date = date.today()
+
+    # Apply all filters
+    fdf = df_temp.copy()
+    if start_date and end_date:
+        fdf = fdf[(fdf["Created_DT"] >= pd.to_datetime(start_date)) & (fdf["Created_DT"] < pd.to_datetime(end_date) + pd.Timedelta(days=1))]
+    if sel_vendor != "All Vendors":
+        fdf = fdf[fdf["Vendor Name"] == sel_vendor]
+    if sel_loc != "All Locations":
+        fdf = fdf[fdf["Location Code"] == sel_loc]
+    if sel_purchaser != "All Purchasers":
+        fdf = fdf[fdf["Purchase Quote raised by"] == sel_purchaser]
+
+    # ── Aggregations ──
+    total_quotes = fdf["Quote No"].nunique() if not fdf.empty else 0
+    grand_qty = fdf["Qty_num"].sum() if not fdf.empty else 0
+    total_locs = fdf["Location Code"].nunique() if not fdf.empty else 0
+
+    if not fdf.empty:
+        qt = fdf.groupby("Quote No").agg(
+            line_total=("Line_Total_Inc", "sum"),
+            freight=("Freight Charge", lambda x: pd.to_numeric(x.iloc[0], errors="coerce") if not x.empty else 0.0),
+            qty=("Qty_num", "sum"), purchaser=("Purchase Quote raised by", "first"),
+            vendor=("Vendor Name", "first"), location=("Location Code", "first"),
+            status=("Status", "first"), created=("Created_DT", "first")
+        ).reset_index()
+        qt["freight"] = qt["freight"].fillna(0.0)
+        qt["value"] = qt["line_total"] + qt["freight"]
+        grand_value = qt["value"].sum()
+    else:
+        qt = pd.DataFrame(columns=["Quote No","value","qty","purchaser","vendor","location","status","created"])
+        grand_value = 0.0
+
+    # ── Navy color palette for matplotlib ──
+    NAVY = "#0f172a"; NAVY2 = "#1e3a5f"; NAVY3 = "#2d5a8e"; LIGHT = "#e2e8f0"
+    PIE_COLORS = ["#0f172a", "#1e3a5f", "#2d5a8e", "#4a90c4", "#7cb3d4", "#a8d0e6"]
+
+    # ── 4 KPI Cards ──
+    st.markdown("")
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("📊 Total Quotes Raised", f"{total_quotes}")
+    k2.metric("📦 Total Qty Purchased", f"{int(grand_qty):,}")
+    k3.metric("💰 Total Value (₹)", f"{grand_value:,.2f}")
+    k4.metric("📍 Total Locations", f"{total_locs}")
 
     st.markdown("---")
 
-    if not df.empty:
-        st.subheader("Recent Quotes")
-        
-        # Calculate correct Total Order Value
-        if "Freight Charge" not in df.columns:
-            df["Freight Charge"] = 0.0
-            
-        # Create temporary columns for proper Line-Item multiplication (Qty * Unit Price Inc GST)
-        df_temp = df.copy()
-        df_temp["Qty_num"] = pd.to_numeric(df_temp["Qty"], errors="coerce").fillna(0.0)
-        df_temp["Price_Inc_num"] = pd.to_numeric(df_temp["Price Inc. GST"], errors="coerce").fillna(0.0)
-        df_temp["Line_Total_Inc"] = df_temp["Qty_num"] * df_temp["Price_Inc_num"]
-        
-        quote_totals = df_temp.groupby("Quote No").agg(
-            total_items_inc_gst=("Line_Total_Inc", "sum"),
-            freight=("Freight Charge", lambda x: pd.to_numeric(x.iloc[0], errors="coerce") if not x.empty else 0.0)
+    # ── Row 2: Breakdown Table (Full Width) ──
+    st.markdown("#### 📋 Purchaser | Vendor | Location Breakdown")
+    if not qt.empty:
+        bd = qt.groupby(["purchaser", "vendor", "location"]).agg(
+            quotes=("Quote No", "nunique"), total_val=("value", "sum")
         ).reset_index()
-        quote_totals["freight"] = quote_totals["freight"].fillna(0.0)
-        quote_totals["Total Order Value"] = quote_totals["total_items_inc_gst"] + quote_totals["freight"]
-        
-        recent = df.drop_duplicates("Quote No", keep="last").sort_values("Created Date", ascending=False).head(10)
-        recent = recent.merge(quote_totals[["Quote No", "Total Order Value"]], on="Quote No", how="left")
-        
-        disp = recent[["Quote No", "Purchase Quote raised by", "Vendor Name", "Status", "Total Order Value", "Created Date"]].copy()
-        
-        # Formatting
-        disp["Total Order Value"] = disp["Total Order Value"].apply(lambda x: f"₹{x:,.2f}" if pd.notnull(x) else "₹0.00")
-        disp = disp.astype({c: str for c in ["Quote No", "Purchase Quote raised by", "Vendor Name", "Status", "Created Date"]})
-        st.dataframe(disp, width='stretch')
-
-        st.markdown("---")
-        st.subheader("Quotes by Status")
-        status_counts = df.drop_duplicates("Quote No", keep="last")["Status"].value_counts()
-        st.bar_chart(status_counts)
+        bd.columns = ["Purchased By", "Vendor", "Location", "Total Quotes Raised", "Total Value (₹)"]
+        bd = bd.sort_values("Total Value (₹)", ascending=False)
+        bd_disp = bd.copy()
+        bd_disp["Total Value (₹)"] = bd_disp["Total Value (₹)"].apply(lambda x: f"₹{x:,.2f}")
+        st.dataframe(bd_disp, use_container_width=True, hide_index=True)
     else:
-        st.info("No quotes found. Create your first quote!")
+        st.info("No data for selected filters.")
+
+    st.markdown("---")
+
+    # ── Row 3: 4 Charts ──
+    ch1, ch2, ch3, ch4 = st.columns(4)
+
+    with ch1:
+        st.markdown("#### 💹 Value by Vendor")
+        if not qt.empty:
+            vv = qt.groupby("vendor")["value"].sum().sort_values(ascending=False).head(6)
+            fig2, ax2 = plt.subplots(figsize=(4, 3.5))
+            fig2.patch.set_facecolor("white")
+            bars = ax2.bar(range(len(vv)), vv.values, color=[NAVY, NAVY2, NAVY3, "#4a90c4", "#7cb3d4", "#a8d0e6"][:len(vv)])
+            ax2.set_xticks(range(len(vv)))
+            ax2.set_xticklabels([v[:12] for v in vv.index], rotation=45, ha="right", fontsize=7, color=NAVY)
+            ax2.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x/1000:.0f}K" if x >= 1000 else f"{x:.0f}"))
+            ax2.tick_params(axis="y", labelsize=8, colors=NAVY); ax2.spines[["top","right"]].set_visible(False)
+            plt.tight_layout()
+            st.pyplot(fig2, use_container_width=True); plt.close(fig2)
+
+    with ch2:
+        st.markdown("#### 📍 Quotes by Location")
+        if not qt.empty:
+            ql = qt.groupby("location")["Quote No"].nunique().sort_values(ascending=False).head(6)
+            fig3, ax3 = plt.subplots(figsize=(4, 3.5))
+            fig3.patch.set_facecolor("white")
+            ax3.bar(range(len(ql)), ql.values, color=[NAVY, NAVY2, NAVY3, "#4a90c4"][:len(ql)])
+            ax3.set_xticks(range(len(ql)))
+            ax3.set_xticklabels([l[:10] for l in ql.index], rotation=45, ha="right", fontsize=7, color=NAVY)
+            ax3.tick_params(axis="y", labelsize=8, colors=NAVY); ax3.spines[["top","right"]].set_visible(False)
+            plt.tight_layout()
+            st.pyplot(fig3, use_container_width=True); plt.close(fig3)
+
+    with ch3:
+        st.markdown("#### 👤 Qty by Purchaser")
+        if not qt.empty:
+            qp = qt.groupby("purchaser")["qty"].sum().sort_values(ascending=True)
+            fig4, ax4 = plt.subplots(figsize=(4, 3.5))
+            fig4.patch.set_facecolor("white")
+            ax4.barh(range(len(qp)), qp.values, color=[NAVY, NAVY2, NAVY3, "#4a90c4"][:len(qp)])
+            ax4.set_yticks(range(len(qp)))
+            ax4.set_yticklabels([p[:12] for p in qp.index], fontsize=8, color=NAVY)
+            ax4.tick_params(axis="x", labelsize=8, colors=NAVY); ax4.spines[["top","right"]].set_visible(False)
+            plt.tight_layout()
+            st.pyplot(fig4, use_container_width=True); plt.close(fig4)
+
+    with ch4:
+        st.markdown("#### 📈 Quotes Over Time")
+        if not qt.empty and qt["created"].notna().any():
+            qt_time = qt.copy()
+            qt_time["month"] = qt_time["created"].dt.to_period("M").astype(str)
+            monthly = qt_time.groupby("month")["Quote No"].nunique().reset_index()
+            monthly.columns = ["Month", "Quotes"]
+            fig5, ax5 = plt.subplots(figsize=(4, 3.5))
+            fig5.patch.set_facecolor("white")
+            ax5.plot(monthly["Month"], monthly["Quotes"], color=NAVY, marker="o", linewidth=2, markersize=5)
+            ax5.fill_between(monthly["Month"], monthly["Quotes"], alpha=0.1, color=NAVY2)
+            ax5.set_xticklabels(monthly["Month"], rotation=45, ha="right", fontsize=7, color=NAVY)
+            ax5.tick_params(axis="y", labelsize=8, colors=NAVY); ax5.spines[["top","right"]].set_visible(False)
+            plt.tight_layout()
+            st.pyplot(fig5, use_container_width=True); plt.close(fig5)
+
+    st.markdown("---")
+
+    # ── Row 4: Monthly Trend + Value Contribution Pie ──
+    bot1, bot2 = st.columns([3, 2])
+
+    with bot1:
+        st.markdown("#### 📉 Monthly Value Trend (₹)")
+        if not qt.empty and qt["created"].notna().any():
+            qt_t2 = qt.copy()
+            qt_t2["month"] = qt_t2["created"].dt.to_period("M").astype(str)
+            mv = qt_t2.groupby("month")["value"].sum().reset_index()
+            mv.columns = ["Month", "Value"]
+            fig6, ax6 = plt.subplots(figsize=(8, 3.5))
+            fig6.patch.set_facecolor("white")
+            ax6.plot(mv["Month"], mv["Value"], color=NAVY, marker="o", linewidth=2.5, markersize=6)
+            ax6.fill_between(mv["Month"], mv["Value"], alpha=0.08, color=NAVY2)
+            ax6.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"₹{x/1000:.0f}K" if x >= 1000 else f"₹{x:.0f}"))
+            ax6.set_xticklabels(mv["Month"], rotation=45, ha="right", fontsize=8, color=NAVY)
+            ax6.tick_params(axis="y", labelsize=8, colors=NAVY); ax6.spines[["top","right"]].set_visible(False)
+            plt.tight_layout()
+            st.pyplot(fig6, use_container_width=True); plt.close(fig6)
+
+    with bot2:
+        st.markdown("#### 🥧 Value Contribution (₹)")
+        if not qt.empty:
+            vc = qt.groupby("vendor")["value"].sum().sort_values(ascending=False).head(5)
+            fig7, ax7 = plt.subplots(figsize=(4, 3.5))
+            fig7.patch.set_facecolor("white")
+            wedges, texts = ax7.pie(vc.values, labels=[v[:14] for v in vc.index],
+                colors=PIE_COLORS[:len(vc)], textprops={"fontsize": 8, "color": NAVY}, startangle=90)
+            ax7.set_aspect("equal")
+            st.pyplot(fig7, use_container_width=True); plt.close(fig7)
+
+    st.markdown("---")
+
+    # ── Recent Quotes Table ──
+    st.markdown("#### 📄 Recent Purchase Quotes")
+    if not fdf.empty:
+        recent = fdf.drop_duplicates("Quote No", keep="last").sort_values("Created Date", ascending=False).head(10)
+        if not qt.empty:
+            recent = recent.merge(qt[["Quote No", "value"]], on="Quote No", how="left")
+            recent = recent.rename(columns={"value": "Total Order Value"})
+        disp_r = recent[["Quote No", "Purchase Quote raised by", "Vendor Name", "Location Code", "Status", "Total Order Value", "Created Date"]].copy()
+        disp_r["Total Order Value"] = disp_r["Total Order Value"].apply(lambda x: f"₹{x:,.2f}" if pd.notnull(x) else "₹0.00")
+        st.dataframe(disp_r, use_container_width=True, hide_index=True)
+    else:
+        st.info("No quotes for selected filters.")
 
 # ── CREATE / EDIT QUOTE ──────────────────────────────────────────
 def page_create_quote():
@@ -859,12 +1019,13 @@ def page_create_quote():
         if "last_loaded_quote" in st.session_state:
             del st.session_state.last_loaded_quote
             st.session_state.line_items = []
-            # Reset other edit fields if needed
+            if "submitted_quote_no" in st.session_state:
+                del st.session_state.submitted_quote_no
 
     quote_no = sel_quote_to_edit if edit_mode else next_quote_number(quotes_df)
 
     # ── Header section ───────────────────────────────────────
-    st.markdown('<div class="erp-card">', unsafe_allow_html=True)
+    st.markdown("---")
     st.subheader("Quote Header")
     h1, h2, h3, h4 = st.columns(4)
     with h1:
@@ -893,7 +1054,7 @@ def page_create_quote():
                 vendor_names = vendor_df[nc].dropna().unique().tolist()
                 break
 
-    v1, v2, v3, v4 = st.columns(4)
+    v1, v2, v3, v4 = st.columns([2.5, 1, 3.5, 1])
     with v1:
         def_v = st.session_state.get("edit_vendor", "-- Select Vendor --")
         v_idx = vendor_names.index(def_v) + 1 if def_v in vendor_names else 0
@@ -926,12 +1087,16 @@ def page_create_quote():
     with v4:
         st.text_input("City", value=vendor_city, disabled=True)
     
-    if vendor_gst:
-        st.caption(f"🛡️ Vendor GST: {vendor_gst}")
-    st.markdown('</div>', unsafe_allow_html=True)
+    if selected_vendor != "-- Select Vendor --":
+        details = []
+        details.append(f"🏢 **Name:** {selected_vendor}")
+        if vendor_addr: details.append(f"📍 **Address:** {vendor_addr}")
+        if vendor_city: details.append(f"🏙️ **City:** {vendor_city}")
+        if vendor_gst: details.append(f"🛡️ **GST:** {vendor_gst}")
+        st.caption("  •  ".join(details))
 
     # ── Payment & Delivery ───────────────────────────────────
-    st.markdown('<div class="erp-card">', unsafe_allow_html=True)
+    st.markdown("---")
     st.subheader("Payment & Delivery Options")
     
     p1, p2, p3 = st.columns(3)
@@ -970,10 +1135,9 @@ def page_create_quote():
     door_delivery = "Yes" if mode_of_delivery == "Door Delivery" else ""
     pickup = "Yes" if mode_of_delivery == "Pickup" else ""
     courier = "Yes" if mode_of_delivery == "Courier" else ""
-    st.markdown('</div>', unsafe_allow_html=True)
 
     # ── Line Items ───────────────────────────────────────────
-    st.markdown('<div class="erp-card">', unsafe_allow_html=True)
+    st.markdown("---")
     st.subheader("Line Items")
 
     erp_codes = []
@@ -1001,25 +1165,26 @@ def page_create_quote():
     with col_clear:
         if st.button("🗑️ Clear All Lines"):
             st.session_state.line_items = []
+            if "submitted_quote_no" in st.session_state:
+                del st.session_state.submitted_quote_no
 
     line_data_for_saving = []
     items_to_remove = []
 
     # UI Table Header
-    h_col0, h_col1, h_col2, h_col3, h_col4, h_col5, h_col6, h_col7, h_col8, h_col9 = st.columns([0.5, 1.5, 1.5, 2.5, 1, 1.2, 1, 1.2, 1.5, 0.5])
+    h_col0, h_col1, h_col2, h_col3, h_col4, h_col5, h_col6, h_col7, h_col8 = st.columns([0.6, 2.0, 2.0, 4.2, 1.1, 1.4, 1.0, 1.8, 0.2])
     h_col0.write("**S.No**")
     h_col1.write("**ERP Code**")
     h_col2.write("**Vendor Item No**")
     h_col3.write("**Product Description**")
     h_col4.write("**Qty**")
-    h_col5.write("**Price Before GST**")
+    h_col5.write("**Price**")
     h_col6.write("**GST %**")
-    h_col7.write("**Total (Incl. GST)**")
-    h_col8.write("**Remarks**")
-    h_col9.write("")
+    h_col7.write("**Total**")
+    h_col8.write("")
 
     for i, line in enumerate(st.session_state.line_items):
-        c0, c1, c2, c3, c4, c5, c6, c7, c8, c9 = st.columns([0.5, 1.5, 1.5, 2.5, 1, 1.2, 1, 1.2, 1.5, 0.5])
+        c0, c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([0.6, 2.0, 2.0, 4.2, 1.1, 1.4, 1.0, 1.8, 0.2])
         
         with c0:
             st.write(f"{i+1}")
@@ -1054,9 +1219,6 @@ def page_create_quote():
                             st.session_state.line_items[i]["erp_code"] = sel_erp
                             st.session_state.line_items[i]["vendor_item_no"] = vendor_item_no
                             # We keep price as None if the user wants to type it, or auto-fill if preferred.
-                            # The user said "I will type", so we'll leave it blank even after selection 
-                            # unless they specifically wanted auto-fill back. 
-                            # For now, let's keep it manual as requested.
                             st.session_state.line_items[i]["price_before_gst"] = None
                             st.session_state.line_items[i]["description"] = description
                             st.rerun()
@@ -1086,8 +1248,6 @@ def page_create_quote():
         with c7:
             st.text_input(f"TotalIncGST {i}", value=f"{line_total_inc_gst:,.2f}", disabled=True, label_visibility="collapsed")
         with c8:
-            remarks = st.text_input(f"Rem {i}", value=line["remarks"], key=f"rem_{i}", label_visibility="collapsed")
-        with c9:
             if st.button("❌", key=f"remove_{i}"):
                 items_to_remove.append(i)
 
@@ -1099,7 +1259,7 @@ def page_create_quote():
             "qty": qty,
             "price_before_gst": price,
             "gst_percent": gst_p,
-            "remarks": remarks
+            "remarks": line.get("remarks", "")
         }
         
         if sel_erp != "-- Select --":
@@ -1112,7 +1272,7 @@ def page_create_quote():
                 "Price Before GST": safe_price,
                 "GST %": gst_p,
                 "Price Inc. GST": price_inc_gst,
-                "Remarks": remarks,
+                "Remarks": line.get("remarks", ""),
                 "line_total_before_gst": line_total_before_gst,
                 "line_total_inc_gst": safe_qty * price_inc_gst
             })
@@ -1138,10 +1298,15 @@ def page_create_quote():
     t2.metric("Total GST", f"₹{gst_amt:,.2f}")
     t3.metric("Freight Charge", f"₹{freight_charge:,.2f}")
     t4.metric("Total Order Value", f"₹{total_order_value:,.2f}")
-    st.markdown('</div>', unsafe_allow_html=True)
 
     # ── Submit ───────────────────────────────────────────────
     st.markdown("---")
+    
+    update_reason = ""
+    if edit_mode:
+        update_reason = st.text_input("📝 Reason for Update / General Remarks", value="", placeholder="e.g., Price changed by vendor, added new items, etc.")
+        st.markdown("<br>", unsafe_allow_html=True)
+
     sb1, sb2 = st.columns([1, 5])
     with sb1:
         submit = st.button("💾 Submit Quote", use_container_width=True)
@@ -1160,8 +1325,29 @@ def page_create_quote():
                 st.error(e)
         else:
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            # Fetch original Created Date and default Status in case it's not found
+            orig_created = now
+            orig_status = "Pending Approval"
+            if edit_mode and not quotes_df.empty:
+                existing_rows = quotes_df[quotes_df["Quote No"] == quote_no]
+                if not existing_rows.empty:
+                    orig_created = str(existing_rows.iloc[0].get("Created Date", now))
+                    orig_status = str(existing_rows.iloc[0].get("Status", "Pending Approval"))
+            
+            # If in edit mode, the status must always be set to "Modified"
+            target_status = "Modified" if edit_mode else "Pending Approval"
+            modified_dt = now if edit_mode else ""
+            
             final_rows = []
             for l in line_data_for_saving:
+                # Combine specific line remarks with overall update reason
+                specific_remark = l["Remarks"]
+                if edit_mode and update_reason:
+                    combined_remark = f"{specific_remark} | Update: {update_reason}" if specific_remark else update_reason
+                else:
+                    combined_remark = specific_remark
+                
                 final_rows.append({
                     "Quote No": quote_no,
                     "Quote Date": str(quote_date),
@@ -1194,11 +1380,11 @@ def page_create_quote():
                     "GST %": l["GST %"],
                     "Price Inc. GST": l["Price Inc. GST"],
                     "Total (Incl. GST)": l["line_total_inc_gst"],
-                    "Remarks": l["Remarks"],
+                    "Remarks": combined_remark,
                     "Freight Charge": freight_charge,
-                    "Status": "Pending Approval",
-                    "Created Date": now,
-                    "Modified Date": "",
+                    "Status": target_status,
+                    "Created Date": orig_created,
+                    "Modified Date": modified_dt,
                 })
             
             if final_rows:
@@ -1211,34 +1397,34 @@ def page_create_quote():
                 
                 if save_quotes(new_df, is_edit=edit_mode, quote_no=quote_no):
                     st.success(f"✅ Quote **{quote_no}** {'updated' if edit_mode else 'submitted'} successfully!")
-                    # Clear session state if it was a new quote, keep it if it was an edit so buttons are visible?
-                    # Actually, better to keep it so they can see the Email/Download buttons that appear below.
+                    st.session_state.submitted_quote_no = quote_no
                     st.cache_data.clear()
-                    # st.rerun() # Don't rerun immediately so they can see the success message and use buttons
+                    quotes_df = load_quotes()
 
         # ── Post-Submit / Edit Actions (Email & Download) ────────
-    if edit_mode:
+    show_actions_for = quote_no if edit_mode else st.session_state.get("submitted_quote_no")
+    if show_actions_for:
         st.markdown("---")
-        st.subheader(f"Actions for Quote: {quote_no}")
+        st.subheader(f"Actions for Quote: {show_actions_for}")
         
         # We need the current rows to generate the email/PO
-        q_rows_for_actions = quotes_df[quotes_df["Quote No"] == quote_no]
+        q_rows_for_actions = quotes_df[quotes_df["Quote No"] == show_actions_for]
         
-        c_dl, c_mail, c_status = st.columns([1, 1.5, 1.5])
+        c_dl, c_mail = st.columns([1.5, 2.5])
         
         with c_dl:
             # 1. Download Actions
             st.write("**📥 Export PO**")
             # Excel
-            buf_xl = export_po_excel(quote_no, quotes_df)
+            buf_xl = export_po_excel(show_actions_for, quotes_df)
             if buf_xl:
-                st.download_button("Excel PO", buf_xl, file_name=f"PO_{quote_no}.xlsx", 
+                st.download_button("Excel PO", buf_xl, file_name=f"PO_{show_actions_for}.xlsx", 
                                  mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                  use_container_width=True)
             # PDF
-            buf_pdf = export_po_pdf(quote_no, quotes_df)
+            buf_pdf = export_po_pdf(show_actions_for, quotes_df)
             if buf_pdf:
-                st.download_button("PDF PO", buf_pdf, file_name=f"PO_{quote_no}.pdf", 
+                st.download_button("PDF PO", buf_pdf, file_name=f"PO_{show_actions_for}.pdf", 
                                  mime="application/pdf",
                                  use_container_width=True)
         
@@ -1291,7 +1477,7 @@ def page_create_quote():
             email_closing = st.text_area("Email Closing & Totals", value=def_closing, height=120)
             
             from email.message import EmailMessage
-            subject_em = f"Purchase Quote Submission - {quote_no}"
+            subject_em = f"Purchase Quote Submission - {show_actions_for}"
             cc_emails = "purchase@supremeindia.com, mis3@supremeindia.com"
             
             msg = EmailMessage()
@@ -1315,26 +1501,10 @@ def page_create_quote():
             msg.add_alternative(html_body, subtype='html')
             
             if buf_pdf:
-                msg.add_attachment(buf_pdf.getvalue(), maintype='application', subtype='pdf', filename=f"PO_{quote_no}.pdf")
+                msg.add_attachment(buf_pdf.getvalue(), maintype='application', subtype='pdf', filename=f"PO_{show_actions_for}.pdf")
             
-            st.download_button("🚀 Open Outlook Draft (with PO PDF)", msg.as_bytes(), file_name=f"Draft_{quote_no}.eml", mime="message/rfc822", use_container_width=True, type="primary")
+            st.download_button("🚀 Open Outlook Draft (with PO PDF)", msg.as_bytes(), file_name=f"Draft_{show_actions_for}.eml", mime="message/rfc822", use_container_width=True)
             st.success("✅ **Draft Ready!** Click the blue button above to download the Outlook file. Once opened, your **PO PDF will be automatically attached** and the table will be perfectly formatted.")
-
-        with c_status:
-            # 3. Status Update
-            st.write("**🚦 Progress Status**")
-            current_st = q_rows_for_actions.iloc[0]["Status"] if not q_rows_for_actions.empty else "Pending Approval"
-            st_opts = ["Pending Approval", "Modified", "Approved", "Rejected", "Converted to PO"]
-            new_st = st.selectbox("Update Status", st_opts, index=st_opts.index(current_st) if current_st in st_opts else 0)
-            
-            if new_st != current_st:
-                if st.button("Apply Status Update"):
-                    quotes_df.loc[quotes_df["Quote No"] == quote_no, "Status"] = new_st
-                    quotes_df.loc[quotes_df["Quote No"] == quote_no, "Modified Date"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    save_quotes(quotes_df)
-                    st.success(f"Status updated to {new_st}")
-                    st.cache_data.clear()
-                    st.rerun()
 
         # ── Show Table for Preview ──
         st.markdown(html_table, unsafe_allow_html=True)
