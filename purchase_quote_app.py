@@ -1301,106 +1301,122 @@ def page_create_quote():
 
     # ── Submit ───────────────────────────────────────────────
     st.markdown("---")
-    
-    update_reason = ""
-    if edit_mode:
-        update_reason = st.text_input("📝 Reason for Update / General Remarks", value="", placeholder="e.g., Price changed by vendor, added new items, etc.")
-        st.markdown("<br>", unsafe_allow_html=True)
 
-    sb1, sb2 = st.columns([1, 5])
-    with sb1:
-        submit = st.button("💾 Submit Quote", use_container_width=True)
+# ✅ ADD THIS (ONLY ONCE)
+if "is_submitting" not in st.session_state:
+    st.session_state.is_submitting = False
 
-    if submit:
-        errors = []
-        if not salesperson.strip():
-            errors.append("Salesperson Name is required.")
-        if selected_vendor == "-- Select Vendor --":
-            errors.append("Please select a Vendor.")
-        if not line_data_for_saving:
-            errors.append("Add at least one valid line item.")
+update_reason = ""
+if edit_mode:
+    update_reason = st.text_input("📝 Reason for Update / General Remarks", value="", placeholder="e.g., Price changed by vendor, added new items, etc.")
+    st.markdown("<br>", unsafe_allow_html=True)
 
-        if errors:
-            for e in errors:
-                st.error(e)
-        else:
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+sb1, sb2 = st.columns([1, 5])
+with sb1:
+    submit = st.button(
+        "💾 Submit Quote",
+        use_container_width=True,
+        disabled=st.session_state.is_submitting   # ✅ prevents multi-click
+    )
+
+if submit:
+    # ✅ Prevent multiple clicks
+    if st.session_state.is_submitting:
+        st.warning("⚠️ Already submitting... Please wait")
+        st.stop()
+
+    st.session_state.is_submitting = True   # ✅ LOCK BUTTON
+
+    errors = []
+    if not salesperson.strip():
+        errors.append("Salesperson Name is required.")
+    if selected_vendor == "-- Select Vendor --":
+        errors.append("Please select a Vendor.")
+    if not line_data_for_saving:
+        errors.append("Add at least one valid line item.")
+
+    if errors:
+        for e in errors:
+            st.error(e)
+        st.session_state.is_submitting = False   # ✅ unlock on error
+    else:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        orig_created = now
+        orig_status = "Pending Approval"
+        if edit_mode and not quotes_df.empty:
+            existing_rows = quotes_df[quotes_df["Quote No"] == quote_no]
+            if not existing_rows.empty:
+                orig_created = str(existing_rows.iloc[0].get("Created Date", now))
+                orig_status = str(existing_rows.iloc[0].get("Status", "Pending Approval"))
+        
+        target_status = "Modified" if edit_mode else "Pending Approval"
+        modified_dt = now if edit_mode else ""
+        
+        final_rows = []
+        for l in line_data_for_saving:
+            specific_remark = l["Remarks"]
+            if edit_mode and update_reason:
+                combined_remark = f"{specific_remark} | Update: {update_reason}" if specific_remark else update_reason
+            else:
+                combined_remark = specific_remark
             
-            # Fetch original Created Date and default Status in case it's not found
-            orig_created = now
-            orig_status = "Pending Approval"
-            if edit_mode and not quotes_df.empty:
-                existing_rows = quotes_df[quotes_df["Quote No"] == quote_no]
-                if not existing_rows.empty:
-                    orig_created = str(existing_rows.iloc[0].get("Created Date", now))
-                    orig_status = str(existing_rows.iloc[0].get("Status", "Pending Approval"))
+            final_rows.append({
+                "Quote No": quote_no,
+                "Quote Date": str(quote_date),
+                "Location Code": location_code,
+                "Purchase Quote raised by": salesperson.strip(),
+                "Vendor Name": selected_vendor,
+                "Vendor No": vendor_no,
+                "Vendor Address": vendor_addr,
+                "Vendor City": vendor_city,
+                "Vendor GST": vendor_gst,
+                "Vendor Email": vendor_email,
+                "Payment Method": payment_method,
+                "Cash": cash,
+                "Online Transfer": online_transfer,
+                "CDC": cdc,
+                "PDC": pdc,
+                "Credit Days": credit_days,
+                "Mode of Delivery": mode_of_delivery,
+                "Door Delivery": door_delivery,
+                "Pickup": pickup,
+                "Courier": courier,
+                "Expected Delivery Date": str(expected_delivery) if expected_delivery else "",
+                "Courier Details": courier_details,
+                "S.No": l["S.No"],
+                "ERP Code": l["ERP Code"],
+                "Vendor Item No": l["Vendor Item No"],
+                "Product Description": l["Product Description"],
+                "Qty": l["Qty"],
+                "Price Before GST": l["Price Before GST"],
+                "GST %": l["GST %"],
+                "Price Inc. GST": l["Price Inc. GST"],
+                "Total (Incl. GST)": l["line_total_inc_gst"],
+                "Remarks": combined_remark,
+                "Freight Charge": freight_charge,
+                "Status": target_status,
+                "Created Date": orig_created,
+                "Modified Date": modified_dt,
+            })
+        
+        if final_rows:
+            new_df = pd.DataFrame(final_rows)
+            for col in REQUIRED_COLS:
+                if col not in new_df.columns:
+                    new_df[col] = ""
+            new_df = new_df[REQUIRED_COLS]
             
-            # If in edit mode, the status must always be set to "Modified"
-            target_status = "Modified" if edit_mode else "Pending Approval"
-            modified_dt = now if edit_mode else ""
-            
-            final_rows = []
-            for l in line_data_for_saving:
-                # Combine specific line remarks with overall update reason
-                specific_remark = l["Remarks"]
-                if edit_mode and update_reason:
-                    combined_remark = f"{specific_remark} | Update: {update_reason}" if specific_remark else update_reason
-                else:
-                    combined_remark = specific_remark
+            if save_quotes(new_df, is_edit=edit_mode, quote_no=quote_no):
+                st.success(f"✅ Quote **{quote_no}** {'updated' if edit_mode else 'submitted'} successfully!")
+                st.session_state.submitted_quote_no = quote_no
+                st.cache_data.clear()
+                quotes_df = load_quotes()
+
+                # ✅ UNLOCK + REFRESH
+                st.session_state.is_submitting = False
+                st.rerun()
                 
-                final_rows.append({
-                    "Quote No": quote_no,
-                    "Quote Date": str(quote_date),
-                    "Location Code": location_code,
-                    "Purchase Quote raised by": salesperson.strip(),
-                    "Vendor Name": selected_vendor,
-                    "Vendor No": vendor_no,
-                    "Vendor Address": vendor_addr,
-                    "Vendor City": vendor_city,
-                    "Vendor GST": vendor_gst,
-                    "Vendor Email": vendor_email,
-                    "Payment Method": payment_method,
-                    "Cash": cash,
-                    "Online Transfer": online_transfer,
-                    "CDC": cdc,
-                    "PDC": pdc,
-                    "Credit Days": credit_days,
-                    "Mode of Delivery": mode_of_delivery,
-                    "Door Delivery": door_delivery,
-                    "Pickup": pickup,
-                    "Courier": courier,
-                    "Expected Delivery Date": str(expected_delivery) if expected_delivery else "",
-                    "Courier Details": courier_details,
-                    "S.No": l["S.No"],
-                    "ERP Code": l["ERP Code"],
-                    "Vendor Item No": l["Vendor Item No"],
-                    "Product Description": l["Product Description"],
-                    "Qty": l["Qty"],
-                    "Price Before GST": l["Price Before GST"],
-                    "GST %": l["GST %"],
-                    "Price Inc. GST": l["Price Inc. GST"],
-                    "Total (Incl. GST)": l["line_total_inc_gst"],
-                    "Remarks": combined_remark,
-                    "Freight Charge": freight_charge,
-                    "Status": target_status,
-                    "Created Date": orig_created,
-                    "Modified Date": modified_dt,
-                })
-            
-            if final_rows:
-                new_df = pd.DataFrame(final_rows)
-                # Align columns to REQUIRED_COLS to prevent misaligned database inserts
-                for col in REQUIRED_COLS:
-                    if col not in new_df.columns:
-                        new_df[col] = ""
-                new_df = new_df[REQUIRED_COLS]
-                
-                if save_quotes(new_df, is_edit=edit_mode, quote_no=quote_no):
-                    st.success(f"✅ Quote **{quote_no}** {'updated' if edit_mode else 'submitted'} successfully!")
-                    st.session_state.submitted_quote_no = quote_no
-                    st.cache_data.clear()
-                    quotes_df = load_quotes()
-
         # ── Post-Submit / Edit Actions (Email & Download) ────────
     show_actions_for = quote_no if edit_mode else st.session_state.get("submitted_quote_no")
     if show_actions_for:
