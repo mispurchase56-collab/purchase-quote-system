@@ -7,4 +7,3 @@ gspread
 google-auth
 google-api-python-client
 matplotlib.pyplot
-matplotlib
