@@ -1,6 +1,5 @@
 streamlit
 pandas
-create_outlook_email_message
 generate_email_html
 generate_plain_text_body
 generate_outlook_email_table
