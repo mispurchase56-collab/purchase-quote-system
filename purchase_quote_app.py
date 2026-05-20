@@ -1364,8 +1364,8 @@ def page_create_quote():
                 st.download_button("PDF PO", buf_pdf, file_name=f"PO_{show_actions_for}.pdf", 
                                  mime="application/pdf",
                                  use_container_width=True)
-#email        
-def email_section(
+                
+ def email_section(
     show_actions_for: str,
     q_rows_for_actions: pd.DataFrame,
     vendor_email: str,
@@ -1567,7 +1567,7 @@ Thank you for your business!"""
     
     st.caption("Click to open your default email client with pre-filled recipient, CC, and subject.")
     st.caption("**Note:** Attach the PDF manually after downloading it above.")
- 
+
 # ── VIEW QUOTES ──────────────────────────────────────────────
 def page_view_quotes():
     st.markdown('<div class="section-header">🔍 View Quotes</div>', unsafe_allow_html=True)
