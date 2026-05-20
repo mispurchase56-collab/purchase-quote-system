@@ -1436,75 +1436,198 @@ def page_create_quote():
             fr_em = float(raw_fr_em) if pd.notnull(raw_fr_em) else 0.0
             line_totals = q_rows_for_actions["Qty"].fillna(0) * q_rows_for_actions["Price Inc. GST"].fillna(0)
             total_amt_em = line_totals.sum() + fr_em
-            
-            # Construct HTML table for email
-            html_table = f"""
-            <table style="border-collapse: collapse; width: 100%; font-family: Calibri, Arial, sans-serif; font-size: 13px; border: 1px solid black;">
-                <tr style="background-color: #BDD7EE; color: black; font-weight: bold; text-align: center;">
-                    <td style="border: 1px solid black; padding: 5px;">S.No</td>
-                    <td style="border: 1px solid black; padding: 5px;">Vendor Item No</td>
-                    <td style="border: 1px solid black; padding: 5px;">Product Description</td>
-                    <td style="border: 1px solid black; padding: 5px;">Qty</td>
-                    <td style="border: 1px solid black; padding: 5px;">Price (Excl.)</td>
-                    <td style="border: 1px solid black; padding: 5px;">GST %</td>
-                    <td style="border: 1px solid black; padding: 5px;">Total (Incl. GST)</td>
-                </tr>
-            """
-            for _, r in q_rows_for_actions.iterrows():
-                qty = float(r['Qty']) if pd.notnull(r['Qty']) else 0.0
-                p_b = float(r['Price Before GST']) if pd.notnull(r['Price Before GST']) else 0.0
-                g_p = float(r['GST %']) if pd.notnull(r['GST %']) else 0.0
-                p_i = float(r['Price Inc. GST']) if pd.notnull(r['Price Inc. GST']) else 0.0
-                row_total = qty * p_i
-                html_table += f"<tr><td style='border: 1px solid black; padding: 5px; text-align: center;'>{r['S.No']}</td><td style='border: 1px solid black; padding: 5px;'>{r['Vendor Item No']}</td><td style='border: 1px solid black; padding: 5px;'>{r['Product Description']}</td><td style='border: 1px solid black; padding: 5px; text-align: center;'>{int(qty)}</td><td style='border: 1px solid black; padding: 5px; text-align: right;'>{p_b:,.2f}</td><td style='border: 1px solid black; padding: 5px; text-align: center;'>{g_p}</td><td style='border: 1px solid black; padding: 5px; text-align: right;'>{row_total:,.2f}</td></tr>"
 
-            html_table += f"<tr style='font-weight: bold;'><td style='border: 1px solid black; padding: 5px;' colspan='3'></td><td style='border: 1px solid black; padding: 5px; text-align: center; background-color: #f2f2f2;'>{total_qty_em}</td><td style='border: 1px solid black; padding: 5px;'></td><td style='border: 1px solid black; padding: 5px; text-align: center; background-color: #E2EFDA;'>Total</td><td style='border: 1px solid black; padding: 5px; text-align: right; background-color: #f2f2f2;'>{total_amt_em:,.2f}</td></tr></table>"
+            def_greeting = (
+                "Dear Sir/Madam,\n\n"
+                "Greetings from Supreme Computers India Pvt. Ltd.\n\n"
+                "Please find below the Purchase Quote details for your reference:"
+            )
+            def_closing = (
+                f"Total Qty: {int(total_qty_em)}\n"
+                f"Total Amount (Incl. GST): {total_amt_em:,.2f}\n\n"
+                "Kindly review and confirm. "
+                "Please feel free to contact us for any clarification."
+            )
 
-            # Construct plain-text table for fallback
-            text_table = "S.No\tVendor Item No\tProduct Description\tQty\tPrice (Excl.)\tGST %\tTotal (Incl.)\n"
-            for _, r in q_rows_for_actions.iterrows():
-                qty = float(r['Qty']) if pd.notnull(r['Qty']) else 0.0
-                p_b = float(r['Price Before GST']) if pd.notnull(r['Price Before GST']) else 0.0
-                g_p = float(r['GST %']) if pd.notnull(r['GST %']) else 0.0
-                p_i = float(r['Price Inc. GST']) if pd.notnull(r['Price Inc. GST']) else 0.0
-                row_total = qty * p_i
-                text_table += f"{r['S.No']}\t{r['Vendor Item No']}\t{r['Product Description']}\t{int(qty)}\t{p_b:,.2f}\t{g_p}\t{row_total:,.2f}\n"
-
-            def_greeting = f"Dear Sir/Madam,\n\nGreetings from Supreme Computers India Pvt. Ltd.\n\nPlease find below the Purchase Quote details for your reference:"
-            def_closing = f"Total Qty: {total_qty_em}\nTotal Amount (Incl. GST): {total_amt_em:,.2f}\n\nKindly review and confirm. Please feel free to contact us for any clarification."
-            
             email_greeting = st.text_area("Email Greeting & Intro", value=def_greeting, height=120)
             email_closing = st.text_area("Email Closing & Totals", value=def_closing, height=120)
-            
-            from email.message import EmailMessage
+
             subject_em = f"Purchase Quote Submission - {show_actions_for}"
             cc_emails = "purchase@supremeindia.com, mis3@supremeindia.com"
-            
-            msg = EmailMessage()
-            msg['Subject'] = subject_em
-            msg['Cc'] = cc_emails
-            
-            # Text Fallback
-            full_text_body = f"{email_greeting}\n\n{text_table}\n{email_closing}"
-            msg.set_content(full_text_body)
-            
-            # HTML Main Version
-            html_body = f"""
-            <html>
-            <body style='font-family: Calibri, Arial, sans-serif;'>
-                <p>{email_greeting.replace(chr(10), '<br>')}</p>
-                {html_table}
-                <p>{email_closing.replace(chr(10), '<br>')}</p>
-            </body>
-            </html>
-            """
-            msg.add_alternative(html_body, subtype='html')
-            
+
+            # ── Build Outlook-Classic-safe HTML using list, not f-string loop ──
+            # Keeps every tag on a full line, avoids QP line-break corruption.
+            def _safe(v):
+                """Escape special HTML chars; return plain string (no f-string tags)."""
+                import html as _html
+                return _html.escape(str(v) if pd.notnull(v) else "")
+
+            TD  = 'style="border:1px solid #000000;padding:5px 8px;font-family:Calibri,Arial,sans-serif;font-size:13px;"'
+            TDC = 'style="border:1px solid #000000;padding:5px 8px;text-align:center;font-family:Calibri,Arial,sans-serif;font-size:13px;"'
+            TDR = 'style="border:1px solid #000000;padding:5px 8px;text-align:right;font-family:Calibri,Arial,sans-serif;font-size:13px;"'
+            HDR = 'style="border:1px solid #000000;padding:5px 8px;background-color:#BDD7EE;font-weight:bold;text-align:center;font-family:Calibri,Arial,sans-serif;font-size:13px;"'
+            TOT = 'style="border:1px solid #000000;padding:5px 8px;text-align:right;background-color:#f2f2f2;font-weight:bold;font-family:Calibri,Arial,sans-serif;font-size:13px;"'
+            TOTL= 'style="border:1px solid #000000;padding:5px 8px;text-align:center;background-color:#E2EFDA;font-weight:bold;font-family:Calibri,Arial,sans-serif;font-size:13px;"'
+
+            # Header row
+            html_parts = [
+                '<table border="1" cellspacing="0" cellpadding="0" '
+                'style="border-collapse:collapse;width:100%;border:1px solid #000000;">',
+                '<tr>',
+                '<td ' + HDR + '>S.No</td>',
+                '<td ' + HDR + '>Vendor Item No</td>',
+                '<td ' + HDR + '>Product Description</td>',
+                '<td ' + HDR + '>Qty</td>',
+                '<td ' + HDR + '>Price (Excl.)</td>',
+                '<td ' + HDR + '>GST %</td>',
+                '<td ' + HDR + '>Total (Incl. GST)</td>',
+                '</tr>',
+            ]
+
+            # Data rows — build each cell individually, never embed tags in f-string values
+            for _, r in q_rows_for_actions.iterrows():
+                qty    = float(r['Qty'])           if pd.notnull(r['Qty'])           else 0.0
+                p_b    = float(r['Price Before GST']) if pd.notnull(r['Price Before GST']) else 0.0
+                g_p    = float(r['GST %'])          if pd.notnull(r['GST %'])          else 0.0
+                p_i    = float(r['Price Inc. GST']) if pd.notnull(r['Price Inc. GST']) else 0.0
+                row_total = qty * p_i
+
+                sno_val  = _safe(r['S.No'])
+                vin_val  = _safe(r['Vendor Item No'])
+                desc_val = _safe(r['Product Description'])
+                qty_val  = str(int(qty))
+                pb_val   = "{:,.2f}".format(p_b)
+                gp_val   = str(g_p)
+                rt_val   = "{:,.2f}".format(row_total)
+
+                html_parts += [
+                    '<tr>',
+                    '<td ' + TDC + '>' + sno_val  + '</td>',
+                    '<td ' + TD  + '>' + vin_val  + '</td>',
+                    '<td ' + TD  + '>' + desc_val + '</td>',
+                    '<td ' + TDC + '>' + qty_val  + '</td>',
+                    '<td ' + TDR + '>' + pb_val   + '</td>',
+                    '<td ' + TDC + '>' + gp_val   + '</td>',
+                    '<td ' + TDR + '>' + rt_val   + '</td>',
+                    '</tr>',
+                ]
+
+            # Totals row
+            tqty_val = str(int(total_qty_em))
+            tamt_val = "{:,.2f}".format(total_amt_em)
+            html_parts += [
+                '<tr>',
+                '<td colspan="3" ' + TD  + '></td>',
+                '<td ' + TOT + '>' + tqty_val + '</td>',
+                '<td ' + TD  + '></td>',
+                '<td ' + TOTL+ '>Total</td>',
+                '<td ' + TOT + '>' + tamt_val + '</td>',
+                '</tr>',
+                '</table>',
+            ]
+
+            # Join with newlines — keeps lines short, avoids QP wrapping mid-tag
+            html_table = "\n".join(html_parts)
+
+            # ── Plain-text fallback (tab-separated) ──
+            txt_lines = ["S.No\tVendor Item No\tProduct Description\tQty\tPrice (Excl.)\tGST %\tTotal (Incl.)"]
+            for _, r in q_rows_for_actions.iterrows():
+                qty = float(r['Qty'])           if pd.notnull(r['Qty'])           else 0.0
+                p_b = float(r['Price Before GST']) if pd.notnull(r['Price Before GST']) else 0.0
+                g_p = float(r['GST %'])          if pd.notnull(r['GST %'])          else 0.0
+                p_i = float(r['Price Inc. GST']) if pd.notnull(r['Price Inc. GST']) else 0.0
+                row_total = qty * p_i
+                txt_lines.append(
+                    "\t".join([
+                        str(r['S.No']),
+                        str(r['Vendor Item No']),
+                        str(r['Product Description']),
+                        str(int(qty)),
+                        "{:,.2f}".format(p_b),
+                        str(g_p),
+                        "{:,.2f}".format(row_total),
+                    ])
+                )
+            text_table = "\n".join(txt_lines)
+
+            # ── Build full HTML body ──
+            greeting_html = email_greeting.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
+            closing_html  = email_closing.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
+
+            html_body = "\n".join([
+                "<!DOCTYPE html>",
+                "<html>",
+                "<head>",
+                '<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">',
+                "</head>",
+                "<body>",
+                '<p style="font-family:Calibri,Arial,sans-serif;font-size:13px;">',
+                greeting_html,
+                "</p>",
+                html_table,
+                '<p style="font-family:Calibri,Arial,sans-serif;font-size:13px;">',
+                closing_html,
+                "</p>",
+                "</body>",
+                "</html>",
+            ])
+
+            # ── Assemble .eml using MIMEMultipart — avoids QP on HTML part ──
+            # Using email.mime directly gives full control over Content-Transfer-Encoding.
+            import email.mime.multipart as _mp
+            import email.mime.text      as _mt
+            import email.mime.base      as _mb
+            import email.mime.application as _ma
+            from email import encoders as _enc
+
+            outer = _mp.MIMEMultipart("mixed")
+            outer["Subject"] = subject_em
+            outer["Cc"]      = cc_emails
+            outer["MIME-Version"] = "1.0"
+
+            # multipart/alternative holds text + html
+            alt = _mp.MIMEMultipart("alternative")
+
+            # Plain-text part — utf-8, quoted-printable is fine here (plain text)
+            plain_body = email_greeting + "\n\n" + text_table + "\n\n" + email_closing
+            alt.attach(_mt.MIMEText(plain_body, "plain", "utf-8"))
+
+            # HTML part — force base64 so QP encoding NEVER corrupts the tags
+            html_part = _mt.MIMEText(html_body, "html", "utf-8")
+            # Override the default QP transfer encoding with base64
+            html_encoded = html_body.encode("utf-8")
+            import base64 as _b64
+            html_part_b64 = _mb.MIMEBase("text", "html")
+            html_part_b64["Content-Type"] = 'text/html; charset="utf-8"'
+            html_part_b64["Content-Transfer-Encoding"] = "base64"
+            html_part_b64.set_payload(_b64.encodebytes(html_encoded).decode("ascii"))
+            alt.attach(html_part_b64)
+
+            outer.attach(alt)
+
+            # PDF attachment
             if buf_pdf:
-                msg.add_attachment(buf_pdf.getvalue(), maintype='application', subtype='pdf', filename=f"PO_{show_actions_for}.pdf")
-            
-            st.download_button("🚀 Open Outlook Draft (with PO PDF)", msg.as_bytes(), file_name=f"Draft_{show_actions_for}.eml", mime="message/rfc822", use_container_width=True)
-            st.success("✅ **Draft Ready!** Click the blue button above to download the Outlook file. Once opened, your **PO PDF will be automatically attached** and the table will be perfectly formatted.")
+                pdf_bytes = buf_pdf.getvalue()
+                pdf_part = _mb.MIMEBase("application", "pdf")
+                pdf_part["Content-Disposition"] = f'attachment; filename="PO_{show_actions_for}.pdf"'
+                pdf_part["Content-Transfer-Encoding"] = "base64"
+                pdf_part.set_payload(_b64.encodebytes(pdf_bytes).decode("ascii"))
+                outer.attach(pdf_part)
+
+            eml_bytes = outer.as_bytes()
+
+            st.download_button(
+                "🚀 Open Outlook Draft (with PO PDF)",
+                eml_bytes,
+                file_name=f"Draft_{show_actions_for}.eml",
+                mime="message/rfc822",
+                use_container_width=True,
+            )
+            st.success(
+                "✅ **Draft Ready!** Click above to download the Outlook file. "
+                "Your **PO PDF will be automatically attached** and the table "
+                "will render correctly in Gmail, Outlook Web, and Outlook Classic."
+            )
 
         # ── Show Table for Preview ──
         st.markdown(html_table, unsafe_allow_html=True)
