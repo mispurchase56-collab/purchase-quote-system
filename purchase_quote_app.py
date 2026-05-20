@@ -1364,140 +1364,210 @@ def page_create_quote():
                 st.download_button("PDF PO", buf_pdf, file_name=f"PO_{show_actions_for}.pdf", 
                                  mime="application/pdf",
                                  use_container_width=True)
+#email        
+def email_section(
+    show_actions_for: str,
+    q_rows_for_actions: pd.DataFrame,
+    vendor_email: str,
+    buf_pdf: io.BytesIO
+):
+    """
+    Refactored email submission section with Outlook compatibility.
+    
+    ✅ Features:
+        - Outlook-compatible HTML tables
+        - No broken HTML tags
+        - Proper character encoding
+        - Works in Gmail, Outlook Web, Outlook Classic
+    """
+    
+    # Import the email template functions
+    from email_templates import (
+        create_outlook_email_message,
+        generate_email_html,
+        generate_outlook_email_table,
+        generate_totals_table,
+        safe_str,
+        format_currency
+    )
+    
+    st.write("**✉️ Email Submission**")
+    
+    # ── Calculate totals ──
+    total_qty = 0
+    subtotal_excl_gst = 0.0
+    total_gst = 0.0
+    grand_total_before_freight = 0.0
+    
+    for _, row in q_rows_for_actions.iterrows():
+        try:
+            qty = float(row.get('Qty', 0) or 0)
+            total_qty += qty
+        except (ValueError, TypeError):
+            qty = 0.0
         
-        with c_mail:
-            # ════════════════════════════════════════════════════
-            #  ★ MODIFIED EMAIL SECTION — Opens email client directly ★
-            # ════════════════════════════════════════════════════
-            st.write("**✉️ Email Submission**")
-            
-            # ── Compute totals for email ──
-            total_qty_em = q_rows_for_actions["Qty"].fillna(0).sum()
-            raw_fr_em = q_rows_for_actions["Freight Charge"].iloc[0] if "Freight Charge" in q_rows_for_actions.columns else 0
-            fr_em = float(raw_fr_em) if pd.notnull(raw_fr_em) else 0.0
-            line_totals = q_rows_for_actions["Qty"].fillna(0) * q_rows_for_actions["Price Inc. GST"].fillna(0)
-            total_amt_em = line_totals.sum() + fr_em
-            
-            # ── Build the HTML table (for preview & .eml) ──
-            html_table = f"""
-            <table style="border-collapse: collapse; width: 100%; font-family: Calibri, Arial, sans-serif; font-size: 13px; border: 1px solid black;">
-                <tr style="background-color: #BDD7EE; color: black; font-weight: bold; text-align: center;">
-                    <td style="border: 1px solid black; padding: 5px;">S.No</td>
-                    <td style="border: 1px solid black; padding: 5px;">Vendor Item No</td>
-                    <td style="border: 1px solid black; padding: 5px;">Product Description</td>
-                    <td style="border: 1px solid black; padding: 5px;">Qty</td>
-                    <td style="border: 1px solid black; padding: 5px;">Price (Excl.)</td>
-                    <td style="border: 1px solid black; padding: 5px;">GST %</td>
-                    <td style="border: 1px solid black; padding: 5px;">Total (Incl. GST)</td>
-                </tr>
-            """
-            for _, r in q_rows_for_actions.iterrows():
-                qty = float(r['Qty']) if pd.notnull(r['Qty']) else 0.0
-                p_b = float(r['Price Before GST']) if pd.notnull(r['Price Before GST']) else 0.0
-                g_p = float(r['GST %']) if pd.notnull(r['GST %']) else 0.0
-                p_i = float(r['Price Inc. GST']) if pd.notnull(r['Price Inc. GST']) else 0.0
-                row_total = qty * p_i
-                html_table += f"<tr><td style='border: 1px solid black; padding: 5px; text-align: center;'>{r['S.No']}</td><td style='border: 1px solid black; padding: 5px;'>{r['Vendor Item No']}</td><td style='border: 1px solid black; padding: 5px;'>{r['Product Description']}</td><td style='border: 1px solid black; padding: 5px; text-align: center;'>{int(qty)}</td><td style='border: 1px solid black; padding: 5px; text-align: right;'>{p_b:,.2f}</td><td style='border: 1px solid black; padding: 5px; text-align: center;'>{g_p}</td><td style='border: 1px solid black; padding: 5px; text-align: right;'>{row_total:,.2f}</td></tr>"
+        try:
+            price_excl = float(row.get('Price Before GST', 0) or 0)
+            price_incl = float(row.get('Price Inc. GST', 0) or 0)
+        except (ValueError, TypeError):
+            price_excl = 0.0
+            price_incl = 0.0
+        
+        line_excl = qty * price_excl
+        line_incl = qty * price_incl
+        
+        subtotal_excl_gst += line_excl
+        total_gst += (line_incl - line_excl)
+        grand_total_before_freight += line_incl
+    
+    try:
+        raw_freight = q_rows_for_actions["Freight Charge"].iloc[0] if "Freight Charge" in q_rows_for_actions.columns else 0
+        freight_charge = float(raw_freight) if pd.notnull(raw_freight) else 0.0
+    except (ValueError, TypeError):
+        freight_charge = 0.0
+    
+    grand_total = grand_total_before_freight + freight_charge
+    
+    # ── Editable email content ──
+    def_greeting = f"""Dear Sir/Madam,
 
-            html_table += f"<tr style='font-weight: bold;'><td style='border: 1px solid black; padding: 5px;' colspan='3'></td><td style='border: 1px solid black; padding: 5px; text-align: center; background-color: #f2f2f2;'>{total_qty_em}</td><td style='border: 1px solid black; padding: 5px;'></td><td style='border: 1px solid black; padding: 5px; text-align: center; background-color: #E2EFDA;'>Total</td><td style='border: 1px solid black; padding: 5px; text-align: right; background-color: #f2f2f2;'>{total_amt_em:,.2f}</td></tr></table>"
+Greetings from {safe_str(vendor_email.split('@')[0] if '@' in vendor_email else 'our company')}.
 
-            # ── Build plain-text table for mailto body ──
-            text_lines = []
-            text_lines.append(f"{'S.No':<6} {'Vendor Item':<20} {'Description':<35} {'Qty':>5} {'Price':>12} {'GST%':>6} {'Total':>14}")
-            text_lines.append("-" * 100)
-            for _, r in q_rows_for_actions.iterrows():
-                qty = float(r['Qty']) if pd.notnull(r['Qty']) else 0.0
-                p_b = float(r['Price Before GST']) if pd.notnull(r['Price Before GST']) else 0.0
-                g_p = float(r['GST %']) if pd.notnull(r['GST %']) else 0.0
-                p_i = float(r['Price Inc. GST']) if pd.notnull(r['Price Inc. GST']) else 0.0
-                row_total = qty * p_i
-                desc_short = str(r['Product Description'])[:35]
-                vitem_short = str(r['Vendor Item No'])[:20]
-                text_lines.append(f"{r['S.No']:<6} {vitem_short:<20} {desc_short:<35} {int(qty):>5} {p_b:>12,.2f} {g_p:>6} {row_total:>14,.2f}")
-            text_lines.append("-" * 100)
-            text_lines.append(f"{'TOTAL':>70} {int(total_qty_em):>5} {'':>12} {'':>6} {total_amt_em:>14,.2f}")
-            text_table_str = "\n".join(text_lines)
+Please find below the Purchase Quote details for your reference. We would appreciate your prompt review and confirmation."""
+    
+    def_closing = f"""Total Qty: {int(total_qty)}
+Total Amount (Incl. GST): {format_currency(grand_total)}
 
-            # ── Editable greeting & closing ──
-            def_greeting = f"Dear Sir/Madam,\n\nGreetings from Supreme Computers India Pvt. Ltd.\n\nPlease find below the Purchase Quote details for your reference:"
-            def_closing = f"Total Qty: {total_qty_em}\nTotal Amount (Incl. GST): {total_amt_em:,.2f}\n\nKindly review and confirm. Please feel free to contact us for any clarification."
-            
-            email_greeting = st.text_area("Email Greeting & Intro", value=def_greeting, height=120)
-            email_closing = st.text_area("Email Closing & Totals", value=def_closing, height=120)
-            
-            # ── Email parameters ──
-            subject_em = f"Purchase Quote Submission - {show_actions_for}"
-            cc_emails = "purchase@supremeindia.com, mis3@supremeindia.com"
-            vendor_to_email = vendor_email if vendor_email and vendor_email != "nan" else ""
-            
-            # ══════════════════════════════════════════════════
-            #  ★ OPTION 1: MAILTO LINK — Opens email client DIRECTLY ★
-            # ══════════════════════════════════════════════════
-            mailto_body = f"{email_greeting}\n\n{text_table_str}\n\n{email_closing}\n\n---\nNote: PO PDF is available for download from the Purchase Quote System."
-            
-            # Build mailto URL (URL-encode all parts)
-            mailto_params = {
-                "subject": subject_em,
-                "cc": cc_emails,
-                "body": mailto_body
-            }
-            mailto_url = f"mailto:{urllib.parse.quote(vendor_to_email)}?{urllib.parse.urlencode(mailto_params, quote_via=urllib.parse.quote)}"
-            
-            # Render as a styled HTML link that looks like a button
-            st.markdown(f'''
-                <a href="{mailto_url}" class="mailto-btn" target="_blank">
-                    ✉️ Open Email Client — Compose Now
-                </a>
-                <p style="font-size: 12px; color: #94a3b8; margin-top: 8px;">
-                    Opens Outlook / default mail app with To, CC, Subject & body pre-filled.<br>
-                    Attach the PO PDF manually after downloading it above.
-                </p>
-            ''', unsafe_allow_html=True)
-            
-            st.markdown("<br>", unsafe_allow_html=True)
-            
-            # ══════════════════════════════════════════════════
-            #  ★ OPTION 2: .EML FILE — Full HTML email with PDF attached ★
-            # ══════════════════════════════════════════════════
-            from email.message import EmailMessage
-            
-            msg = EmailMessage()
-            msg['Subject'] = subject_em
-            msg['To'] = vendor_to_email
-            msg['Cc'] = cc_emails
-            
-            full_text_body = f"{email_greeting}\n\n{text_table_str}\n\n{email_closing}"
-            msg.set_content(full_text_body)
-            
-            html_body = f"""
-            <html>
-            <body style='font-family: Calibri, Arial, sans-serif;'>
-                <p>{email_greeting.replace(chr(10), '<br>')}</p>
-                {html_table}
-                <p>{email_closing.replace(chr(10), '<br>')}</p>
-            </body>
-            </html>
-            """
-            msg.add_alternative(html_body, subtype='html')
-            
-            if buf_pdf:
-                msg.add_attachment(buf_pdf.getvalue(), maintype='application', subtype='pdf', filename=f"PO_{show_actions_for}.pdf")
-            
-            with st.expander("📎 Download .EML file (with HTML table + PO PDF attached)"):
-                st.download_button(
-                    "⬇️ Download .EML Draft", 
-                    msg.as_bytes(), 
-                    file_name=f"Draft_{show_actions_for}.eml", 
-                    mime="message/rfc822", 
-                    use_container_width=True
-                )
-                st.caption("Open this .eml file to get the full HTML-formatted email with PO PDF auto-attached.")
+Kindly review and provide your confirmation at the earliest. Please feel free to contact us for any clarification or modifications.
 
-        # ── Show Table for Preview ──
-        st.markdown("---")
-        st.markdown("**📋 Line Items Preview**")
-        st.markdown(html_table, unsafe_allow_html=True)
-
+Thank you for your business!"""
+    
+    c_email1, c_email2 = st.columns(2)
+    
+    with c_email1:
+        email_greeting = st.text_area(
+            "📝 Email Greeting & Intro",
+            value=def_greeting,
+            height=100,
+            help="Customize the email opening message"
+        )
+    
+    with c_email2:
+        email_closing = st.text_area(
+            "📝 Email Closing & Signature",
+            value=def_closing,
+            height=100,
+            help="Customize the email closing message"
+        )
+    
+    # ── Email parameters ──
+    subject = f"Purchase Quote Submission - {show_actions_for}"
+    cc_emails = "purchase@supremeindia.com, mis3@supremeindia.com"
+    to_email = vendor_email if vendor_email and safe_str(vendor_email) != "nan" else ""
+    
+    if not to_email:
+        st.warning("⚠️ No vendor email address found. Please update vendor details with email address.")
+        return
+    
+    # ══════════════════════════════════════════════════════════════
+    #  OPTION 1: Download .EML file (opens in Outlook)
+    # ══════════════════════════════════════════════════════════════
+    
+    st.markdown("##### 📎 Download Email Draft")
+    
+    # Create email message with Outlook-compatible HTML
+    msg = create_outlook_email_message(
+        subject=subject,
+        to_email=to_email,
+        cc_emails=cc_emails,
+        greeting=email_greeting,
+        quote_data=q_rows_for_actions,
+        subtotal_excl_gst=subtotal_excl_gst,
+        total_gst=total_gst,
+        freight_charge=freight_charge,
+        grand_total=grand_total,
+        closing=email_closing,
+        pdf_attachment=buf_pdf,
+        pdf_filename=f"PO_{show_actions_for}.pdf"
+    )
+    
+    # Download .EML file
+    eml_bytes = msg.as_bytes()
+    st.download_button(
+        label="⬇️ Download .EML (Double-click to open in Outlook)",
+        data=eml_bytes,
+        file_name=f"PO_{show_actions_for}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.eml",
+        mime="message/rfc822",
+        use_container_width=True
+    )
+    
+    st.caption("✓ The .EML file includes:")
+    st.caption("  • Recipient email (To, Cc)")
+    st.caption("  • Subject line")
+    st.caption("  • Formatted HTML table (works in Outlook Classic)")
+    st.caption("  • Plain text fallback")
+    st.caption("  • PDF attachment (PO document)")
+    
+    st.markdown("---")
+    
+    # ══════════════════════════════════════════════════════════════
+    #  OPTION 2: Preview HTML in Streamlit
+    # ══════════════════════════════════════════════════════════════
+    
+    with st.expander("👁️ Preview Email in Browser"):
+        st.write("**Email Preview** (this is how it will appear in Outlook):")
+        
+        # Generate and display HTML
+        html_preview = generate_email_html(
+            greeting=email_greeting,
+            quote_data=q_rows_for_actions,
+            subtotal_excl_gst=subtotal_excl_gst,
+            total_gst=total_gst,
+            freight_charge=freight_charge,
+            grand_total=grand_total,
+            closing=email_closing
+        )
+        
+        st.markdown(html_preview, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    # ══════════════════════════════════════════════════════════════
+    #  OPTION 3: Mailto Link (opens email client)
+    # ══════════════════════════════════════════════════════════════
+    
+    st.markdown("##### 🖱️ Or Open Email Client Directly")
+    
+    # Generate plain text body for mailto
+    from email_templates import generate_plain_text_body
+    
+    text_body = generate_plain_text_body(
+        greeting=email_greeting,
+        quote_data=q_rows_for_actions,
+        subtotal_excl_gst=subtotal_excl_gst,
+        total_gst=total_gst,
+        freight_charge=freight_charge,
+        grand_total=grand_total,
+        closing=email_closing
+    )
+    
+    # Build mailto URL
+    mailto_params = {
+        "subject": subject,
+        "cc": cc_emails,
+        "body": text_body
+    }
+    mailto_url = f"mailto:{urllib.parse.quote(to_email)}?{urllib.parse.urlencode(mailto_params, quote_via=urllib.parse.quote)}"
+    
+    st.markdown(f'''
+    <a href="{mailto_url}" style="display:inline-block;padding:12px 24px;background:#059669;color:white;text-decoration:none;border-radius:8px;font-weight:bold;font-size:15px;">
+        ✉️ Open Outlook / Default Email Client
+    </a>
+    ''', unsafe_allow_html=True)
+    
+    st.caption("Click to open your default email client with pre-filled recipient, CC, and subject.")
+    st.caption("**Note:** Attach the PDF manually after downloading it above.")
+ 
 # ── VIEW QUOTES ──────────────────────────────────────────────
 def page_view_quotes():
     st.markdown('<div class="section-header">🔍 View Quotes</div>', unsafe_allow_html=True)
