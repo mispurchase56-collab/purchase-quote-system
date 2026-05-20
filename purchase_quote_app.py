@@ -1372,6 +1372,7 @@ def email_section(
     vendor_email: str,
     buf_pdf: io.BytesIO
 ):
+    """
     Refactored email submission section with Outlook compatibility.
     
     ✅ Features:
