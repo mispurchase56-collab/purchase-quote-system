@@ -4,6 +4,9 @@ numpy
 openpyxl
 fpdf2
 gspread
+EmailMessage
+io
+datetime
 matplotlib
 google-auth
 google-api-python-client
