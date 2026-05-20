@@ -1,12 +1,12 @@
 streamlit
 pandas
+EmailMessage
+io
+datetime
 numpy
 openpyxl
 fpdf2
 gspread
-EmailMessage
-io
-datetime
 matplotlib
 google-auth
 google-api-python-client
