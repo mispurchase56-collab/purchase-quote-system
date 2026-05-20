@@ -1365,12 +1365,12 @@ def page_create_quote():
                                  mime="application/pdf",
                                  use_container_width=True)
                 
- def email_section(
+    def email_section(
     show_actions_for: str,
     q_rows_for_actions: pd.DataFrame,
     vendor_email: str,
     buf_pdf: io.BytesIO
-):
+    ):
     """
     Refactored email submission section with Outlook compatibility.
     
