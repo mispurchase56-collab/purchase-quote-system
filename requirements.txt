@@ -1,6 +1,6 @@
 streamlit
 pandas
-create_outlook_email_message
+generate_email_html
 datetime
 numpy
 openpyxl
