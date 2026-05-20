@@ -1,6 +1,13 @@
 streamlit
 pandas
-EmailMessage
+create_outlook_email_message
+generate_email_html
+generate_plain_text_body
+generate_outlook_email_table
+generate_totals_table
+safe_str
+format_currency
+format_number
 datetime
 numpy
 openpyxl
