@@ -1,3 +1,4 @@
+
 # ============================================================
 #  Purchase Quote System – Streamlit + Google Colab
 #  Run instructions at bottom of file
@@ -9,7 +10,6 @@ import numpy as np
 from datetime import datetime, date
 import os
 import io
-import urllib.parse          # ← NEW: for mailto encoding
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -31,9 +31,11 @@ def get_gspread_client():
     try:
         import json
         
+        # 1. Check local file first (to prevent local Streamlit from raising an exception when secrets are empty)
         if os.path.exists(CREDENTIALS_PATH):
             with open(CREDENTIALS_PATH, 'r') as f:
                 creds_info = json.load(f)
+        # 2. Fall back to Streamlit Secrets (for cloud hosting like streamlit.app)
         else:
             try:
                 if "gcp_service_account" in st.secrets:
@@ -45,9 +47,12 @@ def get_gspread_client():
                 st.error("❌ Missing credentials! Please provide credentials.json locally or configure Streamlit Secrets.")
                 return None
         
+        # AUTO-FIX: The private key often gets messed up with literal '\n' strings
         if 'private_key' in creds_info:
             pk = creds_info['private_key']
+            # Replace literal "\n" strings with real newline characters
             pk = pk.replace("\\n", "\n")
+            # Remove any accidental extra quotes or spaces
             pk = pk.strip().strip('"').strip("'")
             creds_info['private_key'] = pk
 
@@ -62,6 +67,7 @@ gc = get_gspread_client()
 @st.cache_data(ttl=600)
 def load_gsheet(spreadsheet_id: str, sheet_name: str) -> pd.DataFrame:
     """Load data from a Google Sheet. Try API first, then Public CSV fallback."""
+    # 1. Try Google Sheets API (gspread)
     if gc:
         try:
             sh = gc.open_by_key(spreadsheet_id)
@@ -74,6 +80,8 @@ def load_gsheet(spreadsheet_id: str, sheet_name: str) -> pd.DataFrame:
         except Exception as e:
             st.info(f"💡 Note: API access failed for '{sheet_name}'. Trying public link...")
 
+    # 2. Fallback to Public CSV Export (Requires "Anyone with the link" access)
+    # Mapping sheet names to their GIDs (you can find these in the URL gid=xxxx)
     gid_map = {
         "Item Master": "17422179",
         "Vendor Master": "359146087",
@@ -96,6 +104,7 @@ def load_master_data():
     vendor_df = load_gsheet(MASTER_SPREADSHEET_ID, "Vendor Master")
     loc_df = load_gsheet(MASTER_SPREADSHEET_ID, "Location Master")
     
+    # Process Location Master into a dict for the app
     loc_details = {}
     if not loc_df.empty:
         for _, r in loc_df.iterrows():
@@ -108,8 +117,10 @@ def load_master_data():
                 }
     return item_df, vendor_df, loc_details
 
+# Load them globally for caching
 item_df, vendor_df, LOCATION_DETAILS = load_master_data()
 
+# ── Excel storage helpers ────────────────────────────────────
 # ── Google Sheets storage helpers ────────────────────────────
 REQUIRED_COLS = [
     "Quote No", "Quote Date", "Location Code", "Purchase Quote raised by", "Vendor Name", "Vendor No",
@@ -125,12 +136,15 @@ REQUIRED_COLS = [
 LOCAL_EXCEL_PATH = "Purchase_Quotes_Data.xlsx"
 
 def load_quotes() -> pd.DataFrame:
+    # Try Google Sheets first
     df = load_gsheet(DATABASE_SPREADSHEET_ID, "Purchase Quotes")
     if not df.empty:
+        # Basic cleanup
         for c in REQUIRED_COLS:
             if c not in df.columns: df[c] = ""
         return df
     
+    # Fallback to local Excel
     if os.path.exists(LOCAL_EXCEL_PATH):
         try:
             return pd.read_excel(LOCAL_EXCEL_PATH)
@@ -139,16 +153,19 @@ def load_quotes() -> pd.DataFrame:
     return pd.DataFrame(columns=REQUIRED_COLS)
 
 def save_quotes(new_df: pd.DataFrame, is_edit: bool = False, quote_no: str = None):
+    # Enforce perfect column alignment to REQUIRED_COLS
     for col in REQUIRED_COLS:
         if col not in new_df.columns:
             new_df[col] = ""
     new_df = new_df[REQUIRED_COLS]
 
+    # 1. Try Google Sheets Saving
     if gc:
         try:
             sh = gc.open_by_key(DATABASE_SPREADSHEET_ID)
             ws = sh.worksheet("Purchase Quotes")
             
+            # Ensure Google Sheet headers match REQUIRED_COLS exactly
             headers = ws.row_values(1)
             if not headers:
                 ws.append_row(REQUIRED_COLS)
@@ -159,6 +176,7 @@ def save_quotes(new_df: pd.DataFrame, is_edit: bool = False, quote_no: str = Non
                 all_data = ws.get_all_records()
                 full_df = pd.DataFrame(all_data)
                 
+                # Align existing data columns
                 for col in REQUIRED_COLS:
                     if col not in full_df.columns:
                         full_df[col] = ""
@@ -174,6 +192,7 @@ def save_quotes(new_df: pd.DataFrame, is_edit: bool = False, quote_no: str = Non
         except Exception as e:
             st.error(f"⚠️ Google Sheets Save Failed: {e}")
 
+    # 2. Fallback to Local Excel
     try:
         full_df = pd.DataFrame(columns=REQUIRED_COLS)
         if os.path.exists(LOCAL_EXCEL_PATH):
@@ -277,6 +296,8 @@ div[data-testid="metric-container"] div[data-testid="stMetricValue"] {
 /* Success / Warning */
 div[data-baseweb="notification"] { border-radius: 10px !important; }
 
+/* Dark background for main area */
+/* Ensure disabled text is clearly visible in light/dark mode */
 div[data-testid="stTextInput"] input:disabled, 
 div[data-testid="stNumberInput"] input:disabled {
     color: #0f172a !important;
@@ -285,24 +306,6 @@ div[data-testid="stNumberInput"] input:disabled {
     font-weight: 600 !important;
     border: 1px solid #cbd5e1 !important;
 }
-
-/* ── NEW: Mailto button styling ── */
-.mailto-btn {
-    display: inline-block;
-    width: 100%;
-    text-align: center;
-    padding: 12px 24px;
-    background: linear-gradient(135deg, #059669, #10b981);
-    color: white !important;
-    text-decoration: none !important;
-    border-radius: 8px;
-    font-weight: 700;
-    font-size: 15px;
-    font-family: 'Inter', sans-serif;
-    transition: opacity 0.2s;
-    box-sizing: border-box;
-}
-.mailto-btn:hover { opacity: 0.88; color: white !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -316,8 +319,11 @@ if "edit_quote_no" not in st.session_state:
 if "page" not in st.session_state:
     st.session_state.page = "Dashboard"
 
+# (LOCATION_DETAILS is now loaded dynamically from Google Sheets above)
+
 # ── Sidebar ──────────────────────────────────────────────────
 with st.sidebar:
+    # Display Logo
     try:
         st.image("logo.png", use_container_width=True)
     except:
@@ -325,14 +331,17 @@ with st.sidebar:
     
     st.markdown("## 📋 Purchase Quote System")
     st.markdown("---")
+    # Both roles now use "Create / Edit Quote" as the primary workspace
     pages = ["Dashboard", "Create / Edit Quote", "View Quotes"]
     
     st.session_state.page = st.radio("Navigation", pages, index=pages.index(st.session_state.page) if st.session_state.page in pages else 0)
     st.markdown("---")
-    st.caption("v1.1 | Purchase Quote ERP")
+    st.caption("v1.0 | Purchase Quote ERP")
 
+# (item_df and vendor_df are already loaded globally above)
 quotes_df = load_quotes()
 
+# ── Helper: safe column access ───────────────────────────────
 def col(df, *names, default=""):
     for n in names:
         if n in df.columns:
@@ -372,9 +381,9 @@ def export_po_excel(quote_no: str, df: pd.DataFrame) -> io.BytesIO:
     v_email = str(row1.get("Vendor Email", ""))
     
     if (not v_addr or v_addr == "nan") and vendor_name:
-        vdf_temp = load_gsheet(MASTER_SPREADSHEET_ID, "Vendor Master")
-        if not vdf_temp.empty:
-            vrow = vdf_temp[vdf_temp["Name"] == vendor_name] if "Name" in vdf_temp.columns else vdf_temp[vdf_temp["name"] == vendor_name]
+        vendor_df = load_master_sheet("Vendor Master")
+        if not vendor_df.empty:
+            vrow = vendor_df[vendor_df["Name"] == vendor_name] if "Name" in vendor_df.columns else vendor_df[vendor_df["name"] == vendor_name]
             if not vrow.empty:
                 vr = vrow.iloc[0]
                 v_addr = str(vr.get("address", vr.get("Address", "")))
@@ -387,6 +396,7 @@ def export_po_excel(quote_no: str, df: pd.DataFrame) -> io.BytesIO:
     v_gst = v_gst if v_gst != "nan" else ""
     v_email = v_email if v_email != "nan" else ""
     
+    # ── PO Header Details ──
     ws.row_dimensions[1].height = 25
     ws.row_dimensions[2].height = 15
     ws.row_dimensions[3].height = 15
@@ -436,37 +446,45 @@ def export_po_excel(quote_no: str, df: pd.DataFrame) -> io.BytesIO:
             cell.alignment = Alignment(wrap_text=True)
         if c1 != c2:
             ws.merge_cells(f'{c1}{r}:{c2}{r}')
+            # Apply border to all merged cells
             for col in range(openpyxl.utils.column_index_from_string(c1), openpyxl.utils.column_index_from_string(c2) + 1):
                 ws.cell(row=r, column=col).border = tb
 
+    # Row 7: PO Number & Date
     set_cell(7, 'A', 'B', "PO Number:", True)
     set_cell(7, 'C', 'E', quote_no)
     set_cell(7, 'F', 'G', "PO Date:", True)
     set_cell(7, 'H', 'I', row1.get("Quote Date", ""))
 
+    # Row 8: Vendor Name
     set_cell(8, 'A', 'B', "Vendor Name:", True)
     set_cell(8, 'C', 'I', vendor_name)
 
+    # Row 9: Vendor Address
     set_cell(9, 'A', 'B', "Vendor Address:", True)
     full_addr = v_addr
     if v_city: full_addr += f", {v_city}"
     set_cell(9, 'C', 'I', full_addr)
 
+    # Row 10: Vendor GSTIN & Email
     set_cell(10, 'A', 'B', "Vendor GSTIN:", True)
     set_cell(10, 'C', 'E', v_gst)
     set_cell(10, 'F', 'G', "Vendor Email:", True)
     set_cell(10, 'H', 'I', v_email)
 
+    # Row 11: Vendor No & Payment Terms
     set_cell(11, 'A', 'B', "Vendor No:", True)
     set_cell(11, 'C', 'E', str(row1.get("Vendor No", "")))
     set_cell(11, 'F', 'G', "Payment Terms:", True)
     set_cell(11, 'H', 'I', str(row1.get("Credit Days", "")))
 
+    # Row 12: Location & Payment Method
     set_cell(12, 'A', 'B', "Location:", True)
     set_cell(12, 'C', 'E', loc_code)
     set_cell(12, 'F', 'G', "Payment Method:", True)
     set_cell(12, 'H', 'I', str(row1.get("Payment Method", "")))
 
+    # Row 13: Mode of Delivery & Delivery Date
     md = str(row1.get("Mode of Delivery", ""))
     c_details = str(row1.get("Courier Details", ""))
     if c_details: md += f" ({c_details})"
@@ -475,6 +493,7 @@ def export_po_excel(quote_no: str, df: pd.DataFrame) -> io.BytesIO:
     set_cell(13, 'F', 'G', "Delivery Date:", True)
     set_cell(13, 'H', 'I', str(row1.get("Expected Delivery Date", "")))
 
+    # ── Delivery Address Box ──
     ws.merge_cells('A15:I15'); ws['A15'] = "Delivery Address"; ws['A15'].fill = dark_blue; ws['A15'].font = w_bold
     for col in range(1, 10): ws.cell(row=15, column=col).border = tb
     
@@ -557,6 +576,7 @@ def export_po_pdf(quote_no: str, df: pd.DataFrame) -> io.BytesIO:
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.set_font("helvetica", "", 9)
 
+    # PO & Vendor Details
     vendor_name = str(row1.get("Vendor Name", ""))
     v_addr = str(row1.get("Vendor Address", ""))
     v_city = str(row1.get("Vendor City", ""))
@@ -564,9 +584,9 @@ def export_po_pdf(quote_no: str, df: pd.DataFrame) -> io.BytesIO:
     v_email = str(row1.get("Vendor Email", ""))
     
     if (not v_addr or v_addr == "nan") and vendor_name:
-        vdf_temp = load_gsheet(MASTER_SPREADSHEET_ID, "Vendor Master")
-        if not vdf_temp.empty:
-            vrow = vdf_temp[vdf_temp["Name"] == vendor_name] if "Name" in vdf_temp.columns else vdf_temp[vdf_temp["name"] == vendor_name]
+        vendor_df = load_master_sheet("Vendor Master")
+        if not vendor_df.empty:
+            vrow = vendor_df[vendor_df["Name"] == vendor_name] if "Name" in vendor_df.columns else vendor_df[vendor_df["name"] == vendor_name]
             if not vrow.empty:
                 vr = vrow.iloc[0]
                 v_addr = str(vr.get("address", vr.get("Address", "")))
@@ -646,6 +666,7 @@ def export_po_pdf(quote_no: str, df: pd.DataFrame) -> io.BytesIO:
         
     pdf.ln(3)
 
+    # Delivery Address
     pdf.set_fill_color(31, 73, 125)
     pdf.set_text_color(255, 255, 255)
     pdf.set_font("helvetica", "B", 9)
@@ -657,15 +678,17 @@ def export_po_pdf(quote_no: str, df: pd.DataFrame) -> io.BytesIO:
     pdf.multi_cell(0, 6, f"{addr_text}\nContact: {contact_text}", 1)
     pdf.ln(3)
 
+    # Line Items Table Header
     pdf.set_fill_color(192, 0, 0)
     pdf.set_text_color(255, 255, 255)
     pdf.set_font("helvetica", "B", 8)
-    col_w = [10, 25, 25, 60, 10, 22, 10, 28]
+    col_w = [10, 25, 25, 60, 10, 22, 10, 28] # Adjusted widths
     headers = ["S.No", "ERP Code", "Vendor Item", "Description", "Qty", "Price(Excl.)", "GST%", "Total(Incl.)"]
     for i, h in enumerate(headers):
         pdf.cell(col_w[i], 7, h, 1, 0, "C", True)
     pdf.ln()
 
+    # Rows
     pdf.set_text_color(0, 0, 0)
     pdf.set_font("helvetica", "", 8)
     grand_total = 0.0
@@ -689,6 +712,7 @@ def export_po_pdf(quote_no: str, df: pd.DataFrame) -> io.BytesIO:
         pdf.cell(col_w[6], 6, str(l.get("GST %", "")), 1, 0, "C")
         pdf.cell(col_w[7], 6, f"{row_total:,.2f}", 1, 1, "R")
 
+    # Totals
     fr = float(row1.get("Freight Charge", 0) or 0)
     gst_total = grand_total - sub_total
     total_cols_w = sum(col_w[:-1])
@@ -717,11 +741,13 @@ def page_dashboard():
     import matplotlib
     matplotlib.use("Agg")
 
+    # Full View Logo at the top
     try:
         st.image("logo.png", use_container_width=True)
     except:
         pass
 
+    # ── Premium Header Bar ──
     st.markdown("""
     <div style="background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 100%); padding: 18px 28px; border-radius: 14px; margin-bottom: 18px;">
         <span style="color: #ffffff; font-size: 1.5rem; font-weight: 700; letter-spacing: 0.5px;">📊 Purchase Quote Executive Dashboard</span>
@@ -733,12 +759,14 @@ def page_dashboard():
         st.info("No quotes found. Create your first quote!")
         return
 
+    # Prepare data
     df_temp = df.copy()
     df_temp["Qty_num"] = pd.to_numeric(df_temp["Qty"], errors="coerce").fillna(0.0)
     df_temp["Price_Inc_num"] = pd.to_numeric(df_temp["Price Inc. GST"], errors="coerce").fillna(0.0)
     df_temp["Line_Total_Inc"] = df_temp["Qty_num"] * df_temp["Price_Inc_num"]
     df_temp["Created_DT"] = pd.to_datetime(df_temp["Created Date"], errors="coerce")
 
+    # ── Filter Row ──
     fc1, fc2, fc3, fc4 = st.columns(4)
     with fc1:
         date_opt = st.selectbox("📅 Time Period", ["All Time", "Today", "This Week", "This Month", "This Year", "Custom Range"])
@@ -766,6 +794,7 @@ def page_dashboard():
     elif date_opt == "This Year":
         start_date = date(date.today().year, 1, 1); end_date = date.today()
 
+    # Apply all filters
     fdf = df_temp.copy()
     if start_date and end_date:
         fdf = fdf[(fdf["Created_DT"] >= pd.to_datetime(start_date)) & (fdf["Created_DT"] < pd.to_datetime(end_date) + pd.Timedelta(days=1))]
@@ -776,6 +805,7 @@ def page_dashboard():
     if sel_purchaser != "All Purchasers":
         fdf = fdf[fdf["Purchase Quote raised by"] == sel_purchaser]
 
+    # ── Aggregations ──
     total_quotes = fdf["Quote No"].nunique() if not fdf.empty else 0
     grand_qty = fdf["Qty_num"].sum() if not fdf.empty else 0
     total_locs = fdf["Location Code"].nunique() if not fdf.empty else 0
@@ -795,9 +825,11 @@ def page_dashboard():
         qt = pd.DataFrame(columns=["Quote No","value","qty","purchaser","vendor","location","status","created"])
         grand_value = 0.0
 
+    # ── Navy color palette for matplotlib ──
     NAVY = "#0f172a"; NAVY2 = "#1e3a5f"; NAVY3 = "#2d5a8e"; LIGHT = "#e2e8f0"
     PIE_COLORS = ["#0f172a", "#1e3a5f", "#2d5a8e", "#4a90c4", "#7cb3d4", "#a8d0e6"]
 
+    # ── 4 KPI Cards ──
     st.markdown("")
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("📊 Total Quotes Raised", f"{total_quotes}")
@@ -807,6 +839,7 @@ def page_dashboard():
 
     st.markdown("---")
 
+    # ── Row 2: Breakdown Table (Full Width) ──
     st.markdown("#### 📋 Purchaser | Vendor | Location Breakdown")
     if not qt.empty:
         bd = qt.groupby(["purchaser", "vendor", "location"]).agg(
@@ -822,6 +855,7 @@ def page_dashboard():
 
     st.markdown("---")
 
+    # ── Row 3: 4 Charts ──
     ch1, ch2, ch3, ch4 = st.columns(4)
 
     with ch1:
@@ -882,6 +916,7 @@ def page_dashboard():
 
     st.markdown("---")
 
+    # ── Row 4: Monthly Trend + Value Contribution Pie ──
     bot1, bot2 = st.columns([3, 2])
 
     with bot1:
@@ -914,6 +949,7 @@ def page_dashboard():
 
     st.markdown("---")
 
+    # ── Recent Quotes Table ──
     st.markdown("#### 📄 Recent Purchase Quotes")
     if not fdf.empty:
         recent = fdf.drop_duplicates("Quote No", keep="last").sort_values("Created Date", ascending=False).head(10)
@@ -932,6 +968,7 @@ def page_create_quote():
 
     quotes_df = load_quotes()
     
+    # ── Edit Mode Selection ──
     edit_mode = False
     sel_quote_to_edit = "-- New Quote --"
     if not quotes_df.empty:
@@ -940,6 +977,7 @@ def page_create_quote():
         if sel_quote_to_edit != "-- New Quote --":
             edit_mode = True
 
+    # ── Logic to load existing data if in edit mode ──
     if edit_mode and ("last_loaded_quote" not in st.session_state or st.session_state.last_loaded_quote != sel_quote_to_edit):
         q_data = quotes_df[quotes_df["Quote No"] == sel_quote_to_edit]
         if not q_data.empty:
@@ -953,6 +991,7 @@ def page_create_quote():
             st.session_state.edit_mode_of_delivery = str(first_row.get("Mode of Delivery", ""))
             st.session_state.edit_courier_details = str(first_row.get("Courier Details", ""))
             
+            # Load Expected Delivery Date
             ed_val = first_row.get("Expected Delivery Date", None)
             try:
                 if pd.notnull(ed_val) and str(ed_val).strip():
@@ -962,6 +1001,7 @@ def page_create_quote():
             except:
                 st.session_state.edit_expected_delivery = None
             
+            # Load line items
             new_lines = []
             for _, row in q_data.iterrows():
                 new_lines.append({
@@ -984,6 +1024,7 @@ def page_create_quote():
 
     quote_no = sel_quote_to_edit if edit_mode else next_quote_number(quotes_df)
 
+    # ── Header section ───────────────────────────────────────
     st.markdown("---")
     st.subheader("Quote Header")
     h1, h2, h3, h4 = st.columns(4)
@@ -997,12 +1038,14 @@ def page_create_quote():
         loc_idx = location_opts.index(def_loc) if def_loc in location_opts else 0
         location_code = st.selectbox("Location Code", location_opts, index=loc_idx)
         
+        # Display selected location details briefly
         loc_info = LOCATION_DETAILS.get(location_code, {})
         if loc_info:
             st.caption(f"📍 {loc_info['Address'][:50]}...")
     with h4:
         salesperson = st.text_input("Purchase Quote raised by", value=st.session_state.get("edit_salesperson", ""), placeholder="Enter your name")
 
+    # Vendor selection
     st.markdown("#### Vendor")
     vendor_names = []
     if not vendor_df.empty:
@@ -1052,12 +1095,14 @@ def page_create_quote():
         if vendor_gst: details.append(f"🛡️ **GST:** {vendor_gst}")
         st.caption("  •  ".join(details))
 
+    # ── Payment & Delivery ───────────────────────────────────
     st.markdown("---")
     st.subheader("Payment & Delivery Options")
     
     p1, p2, p3 = st.columns(3)
     pm_opts = ["", "Cash", "Online Transfer", "CDC", "PDC"]
     
+    # Use existing data if editing, otherwise vendor default
     if edit_mode:
         curr_pm = st.session_state.get("edit_payment_method", "")
         pm_idx = pm_opts.index(curr_pm) if curr_pm in pm_opts else 0
@@ -1091,6 +1136,7 @@ def page_create_quote():
     pickup = "Yes" if mode_of_delivery == "Pickup" else ""
     courier = "Yes" if mode_of_delivery == "Courier" else ""
 
+    # ── Line Items ───────────────────────────────────────────
     st.markdown("---")
     st.subheader("Line Items")
 
@@ -1125,6 +1171,7 @@ def page_create_quote():
     line_data_for_saving = []
     items_to_remove = []
 
+    # UI Table Header
     h_col0, h_col1, h_col2, h_col3, h_col4, h_col5, h_col6, h_col7, h_col8 = st.columns([0.6, 2.0, 2.0, 4.2, 1.1, 1.4, 1.0, 1.8, 0.2])
     h_col0.write("**S.No**")
     h_col1.write("**ERP Code**")
@@ -1143,6 +1190,7 @@ def page_create_quote():
             st.write(f"{i+1}")
             
         with c1:
+            # Using ERP Code as the main selector
             sel_erp = st.selectbox(f"Select ERP #{i+1}", ["-- Select --"] + erp_codes, 
                                     index=erp_codes.index(line["erp_code"]) + 1 if line["erp_code"] in erp_codes else 0,
                                     key=f"erp_sel_{i}", label_visibility="collapsed")
@@ -1156,6 +1204,7 @@ def page_create_quote():
                 if nc in item_df.columns:
                     irow = item_df[item_df[nc] == sel_erp]
                     if not irow.empty:
+                        # Auto-fill logic
                         if sel_erp != line["erp_code"]:
                             for dc in ["Description", "Search_Description", "Product Description", "Product_Description", "Item Description", "Name"]:
                                 if dc in irow.columns: description = str(irow.iloc[0][dc]); break
@@ -1166,8 +1215,10 @@ def page_create_quote():
                                     try: item_price = float(irow.iloc[0][pc])
                                     except: pass
                                     break
+                            # Update session state correctly for widgets
                             st.session_state.line_items[i]["erp_code"] = sel_erp
                             st.session_state.line_items[i]["vendor_item_no"] = vendor_item_no
+                            # We keep price as None if the user wants to type it, or auto-fill if preferred.
                             st.session_state.line_items[i]["price_before_gst"] = None
                             st.session_state.line_items[i]["description"] = description
                             st.rerun()
@@ -1186,6 +1237,7 @@ def page_create_quote():
         with c6:
             gst_p = st.number_input(f"GST% {i}", min_value=0.0, max_value=100.0, value=float(line["gst_percent"]), step=0.1, key=f"gstp_{i}", label_visibility="collapsed")
         
+        # Handle blank (None) values for calculations
         safe_price = price if price is not None else 0.0
         safe_qty = qty if qty is not None else 0
         
@@ -1199,6 +1251,7 @@ def page_create_quote():
             if st.button("❌", key=f"remove_{i}"):
                 items_to_remove.append(i)
 
+        # Keep session state in sync
         st.session_state.line_items[i] = {
             "erp_code": sel_erp,
             "vendor_item_no": vendor_item_no,
@@ -1228,6 +1281,7 @@ def page_create_quote():
         st.session_state.line_items.pop(idx)
         st.rerun()
 
+    # ── Totals ───────────────────────────────────────────────
     subtotal_before_gst = sum(l["line_total_before_gst"] for l in line_data_for_saving)
     total_inc_gst = sum(l["line_total_inc_gst"] for l in line_data_for_saving)
     gst_amt = total_inc_gst - subtotal_before_gst
@@ -1245,6 +1299,7 @@ def page_create_quote():
     t3.metric("Freight Charge", f"₹{freight_charge:,.2f}")
     t4.metric("Total Order Value", f"₹{total_order_value:,.2f}")
 
+    # ── Submit ───────────────────────────────────────────────
     st.markdown("---")
     
     update_reason = ""
@@ -1271,6 +1326,7 @@ def page_create_quote():
         else:
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
+            # Fetch original Created Date and default Status in case it's not found
             orig_created = now
             orig_status = "Pending Approval"
             if edit_mode and not quotes_df.empty:
@@ -1279,11 +1335,13 @@ def page_create_quote():
                     orig_created = str(existing_rows.iloc[0].get("Created Date", now))
                     orig_status = str(existing_rows.iloc[0].get("Status", "Pending Approval"))
             
+            # If in edit mode, the status must always be set to "Modified"
             target_status = "Modified" if edit_mode else "Pending Approval"
             modified_dt = now if edit_mode else ""
             
             final_rows = []
             for l in line_data_for_saving:
+                # Combine specific line remarks with overall update reason
                 specific_remark = l["Remarks"]
                 if edit_mode and update_reason:
                     combined_remark = f"{specific_remark} | Update: {update_reason}" if specific_remark else update_reason
@@ -1331,6 +1389,7 @@ def page_create_quote():
             
             if final_rows:
                 new_df = pd.DataFrame(final_rows)
+                # Align columns to REQUIRED_COLS to prevent misaligned database inserts
                 for col in REQUIRED_COLS:
                     if col not in new_df.columns:
                         new_df[col] = ""
@@ -1342,535 +1401,114 @@ def page_create_quote():
                     st.cache_data.clear()
                     quotes_df = load_quotes()
 
-    # ── Post-Submit / Edit Actions (Email & Download) ────────
+        # ── Post-Submit / Edit Actions (Email & Download) ────────
     show_actions_for = quote_no if edit_mode else st.session_state.get("submitted_quote_no")
     if show_actions_for:
         st.markdown("---")
         st.subheader(f"Actions for Quote: {show_actions_for}")
         
+        # We need the current rows to generate the email/PO
         q_rows_for_actions = quotes_df[quotes_df["Quote No"] == show_actions_for]
         
         c_dl, c_mail = st.columns([1.5, 2.5])
         
         with c_dl:
+            # 1. Download Actions
             st.write("**📥 Export PO**")
+            # Excel
             buf_xl = export_po_excel(show_actions_for, quotes_df)
             if buf_xl:
                 st.download_button("Excel PO", buf_xl, file_name=f"PO_{show_actions_for}.xlsx", 
                                  mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                  use_container_width=True)
+            # PDF
             buf_pdf = export_po_pdf(show_actions_for, quotes_df)
             if buf_pdf:
                 st.download_button("PDF PO", buf_pdf, file_name=f"PO_{show_actions_for}.pdf", 
                                  mime="application/pdf",
                                  use_container_width=True)
-                
-                
-def safe_str(value: any, default: str = "") -> str:
-    """
-    Safely convert value to string with HTML escaping.
-    
-    Handles:
-    - None / NaN values
-    - HTML special characters (<, >, &, ", ')
-    - Unicode characters
-    - Numeric types
-    
-    Args:
-        value: Any value to convert
-        default: Default if value is None/NaN
-    
-    Returns:
-        str: Safe HTML-escaped string
-    
-    Examples:
-        >>> safe_str(None)
-        ''
-        >>> safe_str("Product<description>")
-        'Product&lt;description&gt;'
-        >>> safe_str("<script>alert('xss')</script>")
-        '&lt;script&gt;alert(&apos;xss&apos;)&lt;/script&gt;'
-    """
-    if value is None or (isinstance(value, float) and pd.isna(value)):
-        return default
-    
-    value_str = str(value).strip()
-    
-    if not value_str or value_str.lower() == 'nan':
-        return default
-    
-    # HTML escape special characters
-    value_str = value_str.replace("&", "&amp;")      # & first!
-    value_str = value_str.replace("<", "&lt;")
-    value_str = value_str.replace(">", "&gt;")
-    value_str = value_str.replace('"', "&quot;")
-    value_str = value_str.replace("'", "&apos;")
-    
-    return value_str
-
-
-def format_currency(amount: float, currency_symbol: str = "₹", decimals: int = 2) -> str:
-    """
-    Format number as currency with proper separators.
-    
-    Args:
-        amount: Numeric amount
-        currency_symbol: Symbol to use (default: ₹)
-        decimals: Decimal places (default: 2)
-    
-    Returns:
-        str: Formatted currency string
-    
-    Examples:
-        >>> format_currency(1234.5)
-        '₹1,234.50'
-        >>> format_currency(1000000)
-        '₹10,00,000.00'
-    """
-    try:
-        amount = float(amount) if amount else 0.0
-    except (ValueError, TypeError):
-        amount = 0.0
-    
-    return f"{currency_symbol}{amount:,.{decimals}f}"
-
-
-def format_number(value: float, decimals: int = 2) -> str:
-    """
-    Format number with thousand separators.
-    
-    Args:
-        value: Numeric value
-        decimals: Decimal places
-    
-    Returns:
-        str: Formatted number
-    
-    Examples:
-        >>> format_number(1234.5)
-        '1,234.50'
-    """
-    try:
-        value = float(value) if value else 0.0
-    except (ValueError, TypeError):
-        value = 0.0
-    
-    return f"{value:,.{decimals}f}"
-
-
-# ── TABLE GENERATION ────────���────────────────────────────────────
-
-def generate_outlook_email_table(
-    quote_data: pd.DataFrame,
-    header_color: str = "#BDD7EE",
-    header_text_color: str = "#000000",
-    row_color_alt: str = "#F2F2F2",
-    border_color: str = "#000000"
-) -> str:
-    """
-    Generate Outlook-compatible HTML table from quote data.
-    
-    Features:
-    - Properly closed tags
-    - No truncation
-    - Table-based layout (NO divs/flexbox)
-    - Inline styles only
-    - HTML-escaped content
-    
-    Args:
-        quote_data: DataFrame with columns:
-            - S.No, Vendor Item No, Product Description
-            - Qty, Price Before GST, GST %, Price Inc. GST, Remarks
-        header_color: Header background color (hex)
-        header_text_color: Header text color (hex)
-        row_color_alt: Alternating row color (hex)
-        border_color: Border color (hex)
-    
-    Returns:
-        str: Complete HTML table as string
-    
-    Raises:
-        ValueError: If required columns missing
-    """
-    
-    required_cols = [
-        'S.No', 'Vendor Item No', 'Product Description',
-        'Qty', 'Price Before GST', 'GST %', 'Price Inc. GST', 'Remarks'
-    ]
-    
-    # Check for required columns
-    missing_cols = [c for c in required_cols if c not in quote_data.columns]
-    if missing_cols:
-        raise ValueError(f"Missing columns: {missing_cols}")
-    
-    html = []
-    html.append('<table cellpadding="0" cellspacing="0" border="1" style="border-collapse: collapse; width: 100%; font-family: Calibri, Arial, sans-serif; font-size: 12px;">')
-    
-    # Header row
-    html.append('<tr>')
-    for col in required_cols:
-        html.append(f'<td style="background-color: {header_color}; color: {header_text_color}; border: 1px solid {border_color}; padding: 8px; font-weight: bold; text-align: center;">{safe_str(col)}</td>')
-    html.append('</tr>')
-    
-    # Data rows
-    for idx, (_, row) in enumerate(quote_data.iterrows()):
-        row_bg = row_color_alt if idx % 2 == 1 else "#FFFFFF"
-        html.append('<tr>')
         
-        # S.No
-        html.append(f'<td style="background-color: {row_bg}; border: 1px solid {border_color}; padding: 8px; text-align: center;">{safe_str(row.get("S.No", idx + 1))}</td>')
-        
-        # Vendor Item No
-        html.append(f'<td style="background-color: {row_bg}; border: 1px solid {border_color}; padding: 8px;">{safe_str(row.get("Vendor Item No", ""))}</td>')
-        
-        # Product Description (may be long)
-        desc = safe_str(row.get("Product Description", ""))[:80]  # Limit length
-        html.append(f'<td style="background-color: {row_bg}; border: 1px solid {border_color}; padding: 8px; word-wrap: break-word;">{desc}</td>')
-        
-        # Qty
-        try:
-            qty = float(row.get('Qty', 0) or 0)
-            qty_str = format_number(qty, 0)
-        except (ValueError, TypeError):
-            qty_str = "0"
-        html.append(f'<td style="background-color: {row_bg}; border: 1px solid {border_color}; padding: 8px; text-align: right;">{qty_str}</td>')
-        
-        # Price Before GST
-        try:
-            pb = float(row.get('Price Before GST', 0) or 0)
-            pb_str = format_currency(pb)
-        except (ValueError, TypeError):
-            pb_str = format_currency(0)
-        html.append(f'<td style="background-color: {row_bg}; border: 1px solid {border_color}; padding: 8px; text-align: right;">{pb_str}</td>')
-        
-        # GST %
-        try:
-            gst_p = float(row.get('GST %', 0) or 0)
-            gst_str = format_number(gst_p, 1)
-        except (ValueError, TypeError):
-            gst_str = "0.0"
-        html.append(f'<td style="background-color: {row_bg}; border: 1px solid {border_color}; padding: 8px; text-align: center;">{gst_str}%</td>')
-        
-        # Price Inc. GST
-        try:
-            qty = float(row.get('Qty', 0) or 0)
-            pi = float(row.get('Price Inc. GST', 0) or 0)
-            line_total = qty * pi
-            line_str = format_currency(line_total)
-        except (ValueError, TypeError):
-            line_str = format_currency(0)
-        html.append(f'<td style="background-color: {row_bg}; border: 1px solid {border_color}; padding: 8px; text-align: right;">{line_str}</td>')
-        
-        # Remarks
-        remarks = safe_str(row.get('Remarks', ''))[:40]
-        html.append(f'<td style="background-color: {row_bg}; border: 1px solid {border_color}; padding: 8px;">{remarks}</td>')
-        
-        html.append('</tr>')
-    
-    html.append('</table>')
-    
-    return '\n'.join(html)
-
-
-def generate_totals_table(
-    subtotal_excl_gst: float,
-    total_gst: float,
-    freight_charge: float,
-    grand_total: float
-) -> str:
-    """
-    Generate summary totals table.
-    
-    Args:
-        subtotal_excl_gst: Subtotal before GST
-        total_gst: Total GST amount
-        freight_charge: Freight/shipping charge
-        grand_total: Final total including all charges
-    
-    Returns:
-        str: HTML table with totals
-    """
-    html = []
-    html.append('<table cellpadding="0" cellspacing="0" border="0" style="margin-top: 20px; font-family: Calibri, Arial, sans-serif; font-size: 12px; width: 100%;">')
-    
-    # Subtotal row
-    html.append('<tr>')
-    html.append('<td style="text-align: right; padding: 8px; width: 70%;">Sub Total (Excl. GST):</td>')
-    html.append(f'<td style="text-align: right; padding: 8px; border: 1px solid #000000; border-collapse: collapse; width: 30%;">{format_currency(subtotal_excl_gst)}</td>')
-    html.append('</tr>')
-    
-    # GST row
-    html.append('<tr>')
-    html.append('<td style="text-align: right; padding: 8px;">Total GST:</td>')
-    html.append(f'<td style="text-align: right; padding: 8px; border: 1px solid #000000;">{format_currency(total_gst)}</td>')
-    html.append('</tr>')
-    
-    # Freight row
-    html.append('<tr>')
-    html.append('<td style="text-align: right; padding: 8px;">Freight Charge:</td>')
-    html.append(f'<td style="text-align: right; padding: 8px; border: 1px solid #000000;">{format_currency(freight_charge)}</td>')
-    html.append('</tr>')
-    
-    # Grand Total row (emphasized)
-    html.append('<tr>')
-    html.append('<td style="text-align: right; padding: 12px; font-weight: bold; background-color: #1F497D; color: #FFFFFF;">GRAND TOTAL (Incl. GST):</td>')
-    html.append(f'<td style="text-align: right; padding: 12px; border: 1px solid #1F497D; background-color: #1F497D; color: #FFFFFF; font-weight: bold;">{format_currency(grand_total)}</td>')
-    html.append('</tr>')
-    
-    html.append('</table>')
-    
-    return '\n'.join(html)
-
-
-# ── BODY GENERATION ──────────────────────────────────────────────
-
-def generate_plain_text_body(
-    greeting: str,
-    quote_data: pd.DataFrame,
-    subtotal_excl_gst: float,
-    total_gst: float,
-    freight_charge: float,
-    grand_total: float,
-    closing: str
-) -> str:
-    """
-    Generate plain text version of email (fallback for HTML).
-    
-    Args:
-        greeting: Opening message
-        quote_data: DataFrame with quote items
-        subtotal_excl_gst: Subtotal
-        total_gst: Total GST
-        freight_charge: Freight charge
-        grand_total: Grand total
-        closing: Closing message
-    
-    Returns:
-        str: Plain text email body
-    """
-    lines = []
-    
-    lines.append(safe_str(greeting))
-    lines.append("")
-    lines.append("=" * 100)
-    lines.append("")
-    
-    # Column headers
-    lines.append(
-        f"{'S.No':<6} {'Vendor Item':<20} {'Description':<35} {'Qty':>6} {'Price':>12} {'GST%':>7} {'Total':>12}"
-    )
-    lines.append("-" * 100)
-    
-    # Data rows
-    for _, row in quote_data.iterrows():
-        try:
-            sno = safe_str(row.get('S.No', ''))
-            vendor = safe_str(row.get('Vendor Item No', ''))[:20]
-            desc = safe_str(row.get('Product Description', ''))[:35]
-            qty = float(row.get('Qty', 0) or 0)
-            pb = float(row.get('Price Before GST', 0) or 0)
-            gst = float(row.get('GST %', 0) or 0)
-            pi = float(row.get('Price Inc. GST', 0) or 0)
-            line_total = qty * pi
+        with c_mail:
+            # 2. Email Configuration
+            st.write("**✉️ Email Submission**")
+            total_qty_em = q_rows_for_actions["Qty"].fillna(0).sum()
+            raw_fr_em = q_rows_for_actions["Freight Charge"].iloc[0] if "Freight Charge" in q_rows_for_actions.columns else 0
+            fr_em = float(raw_fr_em) if pd.notnull(raw_fr_em) else 0.0
+            line_totals = q_rows_for_actions["Qty"].fillna(0) * q_rows_for_actions["Price Inc. GST"].fillna(0)
+            total_amt_em = line_totals.sum() + fr_em
             
-            lines.append(
-                f"{sno:<6} {vendor:<20} {desc:<35} {int(qty):>6} {pb:>12,.2f} {gst:>7.1f}% {line_total:>12,.2f}"
-            )
-        except Exception as e:
-            continue
-    
-    lines.append("-" * 100)
-    
-    # Totals
-    lines.append(f"{'':60} {'':6} {'Sub Total:':>12} {format_currency(subtotal_excl_gst):>12}")
-    lines.append(f"{'':60} {'':6} {'GST Total:':>12} {format_currency(total_gst):>12}")
-    lines.append(f"{'':60} {'':6} {'Freight:':>12} {format_currency(freight_charge):>12}")
-    lines.append(f"{'':60} {'':6} {'GRAND TOTAL:':>12} {format_currency(grand_total):>12}")
-    
-    lines.append("")
-    lines.append("=" * 100)
-    lines.append("")
-    lines.append(safe_str(closing))
-    
-    return '\n'.join(lines)
+            # Construct HTML table for email
+            html_table = f"""
+            <table style="border-collapse: collapse; width: 100%; font-family: Calibri, Arial, sans-serif; font-size: 13px; border: 1px solid black;">
+                <tr style="background-color: #BDD7EE; color: black; font-weight: bold; text-align: center;">
+                    <td style="border: 1px solid black; padding: 5px;">S.No</td>
+                    <td style="border: 1px solid black; padding: 5px;">Vendor Item No</td>
+                    <td style="border: 1px solid black; padding: 5px;">Product Description</td>
+                    <td style="border: 1px solid black; padding: 5px;">Qty</td>
+                    <td style="border: 1px solid black; padding: 5px;">Price (Excl.)</td>
+                    <td style="border: 1px solid black; padding: 5px;">GST %</td>
+                    <td style="border: 1px solid black; padding: 5px;">Total (Incl. GST)</td>
+                </tr>
+            """
+            for _, r in q_rows_for_actions.iterrows():
+                qty = float(r['Qty']) if pd.notnull(r['Qty']) else 0.0
+                p_b = float(r['Price Before GST']) if pd.notnull(r['Price Before GST']) else 0.0
+                g_p = float(r['GST %']) if pd.notnull(r['GST %']) else 0.0
+                p_i = float(r['Price Inc. GST']) if pd.notnull(r['Price Inc. GST']) else 0.0
+                row_total = qty * p_i
+                html_table += f"<tr><td style='border: 1px solid black; padding: 5px; text-align: center;'>{r['S.No']}</td><td style='border: 1px solid black; padding: 5px;'>{r['Vendor Item No']}</td><td style='border: 1px solid black; padding: 5px;'>{r['Product Description']}</td><td style='border: 1px solid black; padding: 5px; text-align: center;'>{int(qty)}</td><td style='border: 1px solid black; padding: 5px; text-align: right;'>{p_b:,.2f}</td><td style='border: 1px solid black; padding: 5px; text-align: center;'>{g_p}</td><td style='border: 1px solid black; padding: 5px; text-align: right;'>{row_total:,.2f}</td></tr>"
 
+            html_table += f"<tr style='font-weight: bold;'><td style='border: 1px solid black; padding: 5px;' colspan='3'></td><td style='border: 1px solid black; padding: 5px; text-align: center; background-color: #f2f2f2;'>{total_qty_em}</td><td style='border: 1px solid black; padding: 5px;'></td><td style='border: 1px solid black; padding: 5px; text-align: center; background-color: #E2EFDA;'>Total</td><td style='border: 1px solid black; padding: 5px; text-align: right; background-color: #f2f2f2;'>{total_amt_em:,.2f}</td></tr></table>"
 
-def generate_email_html(
-    greeting: str,
-    quote_data: pd.DataFrame,
-    subtotal_excl_gst: float,
-    total_gst: float,
-    freight_charge: float,
-    grand_total: float,
-    closing: str,
-    company_name: str = "Supreme Computers India Pvt. Ltd."
-) -> str:
-    """
-    Generate complete Outlook-compatible HTML email body.
-    
-    Args:
-        greeting: Opening message
-        quote_data: DataFrame with quote items
-        subtotal_excl_gst: Subtotal
-        total_gst: Total GST
-        freight_charge: Freight charge
-        grand_total: Grand total
-        closing: Closing message
-        company_name: Company name for header
-    
-    Returns:
-        str: Complete HTML email document
-    """
-    
-    table_html = generate_outlook_email_table(quote_data)
-    totals_html = generate_totals_table(subtotal_excl_gst, total_gst, freight_charge, grand_total)
-    
-    html = f"""<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <meta http-equiv="X-UA-Compatible" content="IE=edge">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Purchase Quote</title>
-</head>
-<body style="font-family: Calibri, Arial, sans-serif; line-height: 1.6; color: #333333; background-color: #FFFFFF; padding: 20px;">
-    
-    <!-- Container -->
-    <div style="max-width: 900px; margin: 0 auto; background-color: #FFFFFF; padding: 20px;">
-        
-        <!-- Header -->
-        <div style="border-bottom: 2px solid #1F497D; padding-bottom: 15px; margin-bottom: 20px;">
-            <h2 style="color: #1F497D; margin: 0 0 5px 0; font-size: 18px;">{safe_str(company_name)}</h2>
-            <p style="color: #666666; margin: 0; font-size: 11px;">Professional Purchase Quote</p>
-        </div>
-        
-        <!-- Greeting -->
-        <div style="margin-bottom: 20px;">
-            <p style="color: #333333; font-size: 12px; white-space: pre-wrap;">{safe_str(greeting)}</p>
-        </div>
-        
-        <!-- Items Table -->
-        <div style="margin-bottom: 20px; overflow-x: auto;">
-            {table_html}
-        </div>
-        
-        <!-- Totals Table -->
-        <div style="margin-bottom: 20px;">
-            {totals_html}
-        </div>
-        
-        <!-- Closing -->
-        <div style="margin-bottom: 20px; margin-top: 30px;">
-            <p style="color: #333333; font-size: 12px; white-space: pre-wrap;">{safe_str(closing)}</p>
-        </div>
-        
-        <!-- Footer -->
-        <div style="border-top: 1px solid #CCCCCC; padding-top: 15px; margin-top: 30px; font-size: 10px; color: #999999;">
-            <p style="margin: 5px 0;">This is an automated purchase quote generated by the Purchase Quote System.</p>
-            <p style="margin: 5px 0;">Generated on: {datetime.now().strftime('%d %B %Y at %H:%M:%S')}</p>
-        </div>
-        
-    </div>
-    
-</body>
-</html>
-"""
-    
-    return html
+            # Construct plain-text table for fallback
+            text_table = "S.No\tVendor Item No\tProduct Description\tQty\tPrice (Excl.)\tGST %\tTotal (Incl.)\n"
+            for _, r in q_rows_for_actions.iterrows():
+                qty = float(r['Qty']) if pd.notnull(r['Qty']) else 0.0
+                p_b = float(r['Price Before GST']) if pd.notnull(r['Price Before GST']) else 0.0
+                g_p = float(r['GST %']) if pd.notnull(r['GST %']) else 0.0
+                p_i = float(r['Price Inc. GST']) if pd.notnull(r['Price Inc. GST']) else 0.0
+                row_total = qty * p_i
+                text_table += f"{r['S.No']}\t{r['Vendor Item No']}\t{r['Product Description']}\t{int(qty)}\t{p_b:,.2f}\t{g_p}\t{row_total:,.2f}\n"
 
+            def_greeting = f"Dear Sir/Madam,\n\nGreetings from Supreme Computers India Pvt. Ltd.\n\nPlease find below the Purchase Quote details for your reference:"
+            def_closing = f"Total Qty: {total_qty_em}\nTotal Amount (Incl. GST): {total_amt_em:,.2f}\n\nKindly review and confirm. Please feel free to contact us for any clarification."
+            
+            email_greeting = st.text_area("Email Greeting & Intro", value=def_greeting, height=120)
+            email_closing = st.text_area("Email Closing & Totals", value=def_closing, height=120)
+            
+            from email.message import EmailMessage
+            subject_em = f"Purchase Quote Submission - {show_actions_for}"
+            cc_emails = "purchase@supremeindia.com, mis3@supremeindia.com"
+            
+            msg = EmailMessage()
+            msg['Subject'] = subject_em
+            msg['Cc'] = cc_emails
+            
+            # Text Fallback
+            full_text_body = f"{email_greeting}\n\n{text_table}\n{email_closing}"
+            msg.set_content(full_text_body)
+            
+            # HTML Main Version
+            html_body = f"""
+            <html>
+            <body style='font-family: Calibri, Arial, sans-serif;'>
+                <p>{email_greeting.replace(chr(10), '<br>')}</p>
+                {html_table}
+                <p>{email_closing.replace(chr(10), '<br>')}</p>
+            </body>
+            </html>
+            """
+            msg.add_alternative(html_body, subtype='html')
+            
+            if buf_pdf:
+                msg.add_attachment(buf_pdf.getvalue(), maintype='application', subtype='pdf', filename=f"PO_{show_actions_for}.pdf")
+            
+            st.download_button("🚀 Open Outlook Draft (with PO PDF)", msg.as_bytes(), file_name=f"Draft_{show_actions_for}.eml", mime="message/rfc822", use_container_width=True)
+            st.success("✅ **Draft Ready!** Click the blue button above to download the Outlook file. Once opened, your **PO PDF will be automatically attached** and the table will be perfectly formatted.")
 
-# ── EMAIL MESSAGE CREATION ───────────────────────────────────────
+        # ── Show Table for Preview ──
+        st.markdown(html_table, unsafe_allow_html=True)
 
-def create_outlook_email_message(
-    subject: str,
-    to_email: str,
-    cc_emails: str,
-    greeting: str,
-    quote_data: pd.DataFrame,
-    subtotal_excl_gst: float,
-    total_gst: float,
-    freight_charge: float,
-    grand_total: float,
-    closing: str,
-    pdf_attachment: Optional[io.BytesIO] = None,
-    pdf_filename: str = "quote.pdf"
-) -> EmailMessage:
-    """
-    Create complete EmailMessage with Outlook-compatible formatting.
-    
-    This is the main function to use for creating purchase quote emails.
-    
-    Args:
-        subject: Email subject line
-        to_email: Recipient email address
-        cc_emails: CC email addresses (comma-separated)
-        greeting: Opening message
-        quote_data: DataFrame with quote items
-        subtotal_excl_gst: Subtotal before GST
-        total_gst: Total GST amount
-        freight_charge: Freight/shipping charge
-        grand_total: Final total
-        closing: Closing message
-        pdf_attachment: Optional PDF buffer for attachment
-        pdf_filename: Name for PDF attachment
-    
-    Returns:
-        EmailMessage: Complete email ready to send/save
-    
-    Examples:
-        >>> msg = create_outlook_email_message(
-        ...     subject="Quote Q0001",
-        ...     to_email="vendor@example.com",
-        ...     cc_emails="mgr@company.com",
-        ...     greeting="Dear Vendor,",
-        ...     quote_data=df,
-        ...     subtotal_excl_gst=1000,
-        ...     total_gst=180,
-        ...     freight_charge=100,
-        ...     grand_total=1280,
-        ...     closing="Please confirm.",
-        ...     pdf_attachment=pdf_buf,
-        ...     pdf_filename="PO_Q0001.pdf"
-        ... )
-        >>> eml_bytes = msg.as_bytes()
-        >>> with open('quote.eml', 'wb') as f:
-        ...     f.write(eml_bytes)
-    """
-    
-    # Create message
-    msg = EmailMessage()
-    msg['Subject'] = safe_str(subject)
-    msg['To'] = safe_str(to_email)
-    msg['Cc'] = safe_str(cc_emails)
-    msg['From'] = 'Purchase Quote System <noreply@supremecomputers.com>'
-    
-    # Generate body content
-    plain_text = generate_plain_text_body(
-        greeting, quote_data, subtotal_excl_gst, total_gst, freight_charge, grand_total, closing
-    )
-    html_content = generate_email_html(
-        greeting, quote_data, subtotal_excl_gst, total_gst, freight_charge, grand_total, closing
-    )
-    
-    # Set content (plain text first, then HTML alternative)
-    msg.set_content(plain_text, charset='utf-8')
-    msg.add_alternative(html_content, subtype='html', charset='utf-8')
-    
-    # Add PDF attachment if provided
-    if pdf_attachment:
-        try:
-            pdf_data = pdf_attachment.getvalue()
-            if pdf_data:
-                msg.add_attachment(
-                    pdf_data,
-                    maintype='application',
-                    subtype='pdf',
-                    filename=safe_str(pdf_filename)
-                )
-        except Exception as e:
-            print(f"Warning: Could not attach PDF: {e}")
-    
-    return msg
 # ── VIEW QUOTES ──────────────────────────────────────────────
 def page_view_quotes():
     st.markdown('<div class="section-header">🔍 View Quotes</div>', unsafe_allow_html=True)
@@ -1879,6 +1517,7 @@ def page_view_quotes():
         st.info("No quotes available yet.")
         return
 
+    # Filters
     f1, f2, f3 = st.columns(3)
     with f1:
         sp_list = ["All"] + df["Purchase Quote raised by"].dropna().unique().tolist()
@@ -1905,6 +1544,7 @@ def page_view_quotes():
         disp_f[c] = disp_f[c].astype(str)
     st.dataframe(disp_f, width='stretch')
 
+    # Download
     buf = io.BytesIO()
     filtered.to_excel(buf, index=False, engine="openpyxl")
     buf.seek(0)
