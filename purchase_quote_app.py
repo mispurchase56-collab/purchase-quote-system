@@ -1006,14 +1006,16 @@ def page_create_quote():
             for _, row in q_data.iterrows():
                 erp_v = str(row.get("ERP Code", "")).strip()
                 is_new_v = (erp_v == "NEW")
+                _qty_raw = row.get("Qty", None)
                 try:
-                    qty_v = int(float(row.get("Qty", 1) or 1))
+                    qty_v = int(float(_qty_raw)) if _qty_raw not in (None, "", "nan") else None
                 except (ValueError, TypeError):
-                    qty_v = 1
+                    qty_v = None
+                _price_raw = row.get("Price Before GST", None)
                 try:
-                    price_v = float(row.get("Price Before GST", 0.0) or 0.0)
+                    price_v = float(_price_raw) if _price_raw not in (None, "", "nan") else None
                 except (ValueError, TypeError):
-                    price_v = 0.0
+                    price_v = None
                 try:
                     gst_v = float(row.get("GST %", 18.0) or 18.0)
                 except (ValueError, TypeError):
@@ -1034,6 +1036,7 @@ def page_create_quote():
         if "last_loaded_quote" in st.session_state:
             del st.session_state.last_loaded_quote
             st.session_state.line_items = []
+            st.session_state["_quote_submitted"] = False
             if "submitted_quote_no" in st.session_state:
                 del st.session_state.submitted_quote_no
 
@@ -1219,8 +1222,8 @@ def page_create_quote():
                 "erp_code":        "",
                 "vendor_item_no":  "",
                 "description":     "",
-                "qty":             1,
-                "price_before_gst": 0.0,
+                "qty":             None,
+                "price_before_gst": None,
                 "gst_percent":     18.0,
                 "remarks":         "",
                 "is_new_item":     False,   # True = manual entry mode
@@ -1294,7 +1297,8 @@ def page_create_quote():
                     st.session_state.line_items[i]["erp_code"]       = "NEW"
                     st.session_state.line_items[i]["vendor_item_no"] = ""
                     st.session_state.line_items[i]["description"]    = ""
-                    st.session_state.line_items[i]["price_before_gst"] = 0.0
+                    st.session_state.line_items[i]["price_before_gst"] = None
+                    st.session_state.line_items[i]["qty"]            = None
                     st.session_state.line_items[i]["gst_percent"]    = 18.0
                     st.rerun()
 
@@ -1342,23 +1346,27 @@ def page_create_quote():
 
         # ── Qty ────────────────────────────────────────────────
         with c4:
+            _qty_live = live.get("qty")
             qty = st.number_input(
                 f"Qty {i}",
                 min_value=0,
-                value=int(live.get("qty") or 1),
+                value=int(_qty_live) if _qty_live is not None else None,
                 step=1,
+                placeholder="Qty",
                 key=f"qty_{i}",
                 label_visibility="collapsed",
             )
 
         # ── Price (always editable — PO-level override) ────────
         with c5:
+            _price_live = live.get("price_before_gst")
             price = st.number_input(
                 f"Price {i}",
                 min_value=0.0,
-                value=float(live.get("price_before_gst") or 0.0),
+                value=float(_price_live) if _price_live is not None else None,
                 step=0.01,
                 format="%.2f",
+                placeholder="0.00",
                 key=f"price_{i}",
                 label_visibility="collapsed",
             )
@@ -1475,11 +1483,25 @@ def page_create_quote():
         update_reason = st.text_input("📝 Reason for Update / General Remarks", value="", placeholder="e.g., Price changed by vendor, added new items, etc.")
         st.markdown("<br>", unsafe_allow_html=True)
 
-    sb1, sb2 = st.columns([1, 5])
-    with sb1:
-        submit = st.button("💾 Submit Quote", use_container_width=True)
+    # ── Submission guard: reset flag when quote context changes ──
+    _submit_key = f"submitted__{quote_no}__{edit_mode}"
+    if st.session_state.get("_last_submit_key") != _submit_key:
+        st.session_state["_last_submit_key"] = _submit_key
+        st.session_state["_quote_submitted"] = False
 
-    if submit:
+    sb1, sb2, sb3 = st.columns([1, 1.5, 3.5])
+    with sb1:
+        already_submitted = st.session_state.get("_quote_submitted", False)
+        submit = st.button(
+            "💾 Submit Quote",
+            use_container_width=True,
+            disabled=already_submitted,
+        )
+    with sb2:
+        if already_submitted:
+            st.success("✅ Already submitted")
+
+    if submit and not already_submitted:
         errors = []
         if not salesperson.strip():
             errors.append("Salesperson Name is required.")
@@ -1566,6 +1588,7 @@ def page_create_quote():
                 new_df = new_df[REQUIRED_COLS]
                 
                 if save_quotes(new_df, is_edit=edit_mode, quote_no=quote_no):
+                    st.session_state["_quote_submitted"] = True
                     st.success(f"✅ Quote **{quote_no}** {'updated' if edit_mode else 'submitted'} successfully!")
                     st.session_state.submitted_quote_no = quote_no
                     st.cache_data.clear()
