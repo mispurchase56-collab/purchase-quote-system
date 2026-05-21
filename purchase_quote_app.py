@@ -1004,14 +1004,29 @@ def page_create_quote():
             # Load line items
             new_lines = []
             for _, row in q_data.iterrows():
+                erp_v = str(row.get("ERP Code", "")).strip()
+                is_new_v = (erp_v == "NEW")
+                try:
+                    qty_v = int(float(row.get("Qty", 1) or 1))
+                except (ValueError, TypeError):
+                    qty_v = 1
+                try:
+                    price_v = float(row.get("Price Before GST", 0.0) or 0.0)
+                except (ValueError, TypeError):
+                    price_v = 0.0
+                try:
+                    gst_v = float(row.get("GST %", 18.0) or 18.0)
+                except (ValueError, TypeError):
+                    gst_v = 18.0
                 new_lines.append({
-                    "erp_code": str(row.get("ERP Code", "")),
-                    "vendor_item_no": str(row.get("Vendor Item No", "")),
-                    "description": str(row.get("Product Description", "")),
-                    "qty": int(row.get("Qty", 1)),
-                    "price_before_gst": float(row.get("Price Before GST", 0.0)),
-                    "gst_percent": float(row.get("GST %", 18.0)),
-                    "remarks": str(row.get("Remarks", ""))
+                    "erp_code":         erp_v,
+                    "vendor_item_no":   str(row.get("Vendor Item No", "")),
+                    "description":      str(row.get("Product Description", "")),
+                    "qty":              qty_v,
+                    "price_before_gst": price_v,
+                    "gst_percent":      gst_v,
+                    "remarks":          str(row.get("Remarks", "")),
+                    "is_new_item":      is_new_v,
                 })
             st.session_state.line_items = new_lines
             st.session_state.last_loaded_quote = sel_quote_to_edit
@@ -1140,142 +1155,295 @@ def page_create_quote():
     st.markdown("---")
     st.subheader("Line Items")
 
-    erp_codes = []
+    # ── Build master lookup structures (ERP / VendorItem / Description) ──
+    # Format for searchable display:  "ERPCODE | Vendor Item | Description | ₹Price"
+    _SEARCH_SENTINEL = "🔍 Type to search or ➕ enter new item below..."
+    _NEW_SENTINEL    = "✏️ NEW ITEM (manual entry)"
+
+    item_lookup = {}   # display_label -> dict of fields
+    search_options = [_SEARCH_SENTINEL, _NEW_SENTINEL]
+
     if not item_df.empty:
-        for nc in ["No", "Item_No", "ERP_Code"]:
-            if nc in item_df.columns:
-                erp_codes = item_df[nc].dropna().unique().tolist()
-                break
+        # Identify column names flexibly
+        _erp_col  = next((c for c in ["No", "Item_No", "ERP_Code"] if c in item_df.columns), None)
+        _desc_col = next((c for c in ["Description", "Search_Description", "Product Description",
+                                      "Product_Description", "Item Description", "Name"] if c in item_df.columns), None)
+        _vin_col  = next((c for c in ["Vendor_Item_No", "VendorItemNo", "Vendor Item No", "Vendor_No"] if c in item_df.columns), None)
+        _price_col= next((c for c in ["Quoting_Price_WIN", "Unit_Price", "Last_Direct_Cost"] if c in item_df.columns), None)
+        _gst_col  = next((c for c in ["GST", "GST%", "GST_Percent", "Tax_Group_Code"] if c in item_df.columns), None)
+
+        for _, irow in item_df.iterrows():
+            erp_v  = str(irow[_erp_col]).strip()   if _erp_col  else ""
+            desc_v = str(irow[_desc_col]).strip()  if _desc_col else ""
+            vin_v  = str(irow[_vin_col]).strip()   if _vin_col  else ""
+            try:
+                price_v = float(irow[_price_col])  if _price_col else 0.0
+            except (ValueError, TypeError):
+                price_v = 0.0
+            try:
+                gst_v = float(irow[_gst_col])      if _gst_col  else 18.0
+            except (ValueError, TypeError):
+                gst_v = 18.0
+
+            if not erp_v or erp_v.lower() == "nan":
+                continue
+
+            # Display label: ERP | VendorItem | Description | ₹Price
+            price_str = f"₹{price_v:,.2f}" if price_v else ""
+            label = " | ".join(filter(None, [erp_v, vin_v, desc_v, price_str]))
+
+            item_lookup[label] = {
+                "erp_code":        erp_v,
+                "vendor_item_no":  vin_v,
+                "description":     desc_v,
+                "price_before_gst": price_v,
+                "gst_percent":     gst_v,
+            }
+            search_options.append(label)
+
+    # Helper: given a stored erp_code, find the matching label in item_lookup
+    def _label_for_erp(erp_code):
+        for lbl, data in item_lookup.items():
+            if data["erp_code"] == erp_code:
+                return lbl
+        return _SEARCH_SENTINEL
 
     if "line_items" not in st.session_state:
         st.session_state.line_items = []
 
-    col_add, col_clear = st.columns([1, 5])
+    # ── Toolbar ──
+    col_add, col_clear, col_hint = st.columns([1, 1.4, 5])
     with col_add:
-        if st.button("➕ Add Line"):
+        if st.button("➕ Add Line", use_container_width=True):
             st.session_state.line_items.append({
-                "erp_code": "", 
-                "vendor_item_no": "", 
-                "description": "", 
-                "qty": None, 
-                "price_before_gst": None,
-                "gst_percent": 18.0,
-                "remarks": ""
+                "erp_code":        "",
+                "vendor_item_no":  "",
+                "description":     "",
+                "qty":             1,
+                "price_before_gst": 0.0,
+                "gst_percent":     18.0,
+                "remarks":         "",
+                "is_new_item":     False,   # True = manual entry mode
             })
     with col_clear:
-        if st.button("🗑️ Clear All Lines"):
+        if st.button("🗑️ Clear All Lines", use_container_width=True):
             st.session_state.line_items = []
             if "submitted_quote_no" in st.session_state:
                 del st.session_state.submitted_quote_no
+    with col_hint:
+        st.caption("💡 Search by ERP Code / Vendor Item No / Description  •  Choose **'NEW ITEM'** to enter an unlisted item manually")
 
     line_data_for_saving = []
-    items_to_remove = []
+    items_to_remove      = []
+    line_errors          = []
 
-    # UI Table Header
-    h_col0, h_col1, h_col2, h_col3, h_col4, h_col5, h_col6, h_col7, h_col8 = st.columns([0.6, 2.0, 2.0, 4.2, 1.1, 1.4, 1.0, 1.8, 0.2])
-    h_col0.write("**S.No**")
-    h_col1.write("**ERP Code**")
-    h_col2.write("**Vendor Item No**")
-    h_col3.write("**Product Description**")
-    h_col4.write("**Qty**")
-    h_col5.write("**Price**")
-    h_col6.write("**GST %**")
-    h_col7.write("**Total**")
-    h_col8.write("")
+    # ── Column header ──
+    st.markdown(
+        "<div style='display:flex;gap:4px;font-weight:600;font-size:13px;"
+        "padding:4px 0 2px 0;border-bottom:2px solid #334155;margin-bottom:4px;'>"
+        "<span style='width:3%'>#</span>"
+        "<span style='width:24%'>Item Search</span>"
+        "<span style='width:12%'>Vendor Item No</span>"
+        "<span style='width:22%'>Description</span>"
+        "<span style='width:7%'>Qty</span>"
+        "<span style='width:10%'>Price (Excl.)</span>"
+        "<span style='width:7%'>GST %</span>"
+        "<span style='width:11%'>Total (Incl.)</span>"
+        "<span style='width:4%'></span>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
 
     for i, line in enumerate(st.session_state.line_items):
-        c0, c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([0.6, 2.0, 2.0, 4.2, 1.1, 1.4, 1.0, 1.8, 0.2])
-        
+        is_new = line.get("is_new_item", False)
+
+        # Column layout: #, search/label, vendor_item, desc, qty, price, gst%, total, del
+        c0, c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([0.5, 3.5, 1.8, 3.2, 0.9, 1.5, 0.9, 1.6, 0.4])
+
         with c0:
-            st.write(f"{i+1}")
-            
+            st.markdown(f"<div style='padding-top:34px;font-weight:600'>{i+1}</div>", unsafe_allow_html=True)
+
+        # ── Item selector / new-item toggle ──────────────────
         with c1:
-            # Using ERP Code as the main selector
-            sel_erp = st.selectbox(f"Select ERP #{i+1}", ["-- Select --"] + erp_codes, 
-                                    index=erp_codes.index(line["erp_code"]) + 1 if line["erp_code"] in erp_codes else 0,
-                                    key=f"erp_sel_{i}", label_visibility="collapsed")
-        
-        description = line["description"]
-        vendor_item_no = line["vendor_item_no"]
-        item_price = line["price_before_gst"]
-        
-        if sel_erp != "-- Select --" and not item_df.empty:
-            for nc in ["No", "Item_No", "ERP_Code"]:
-                if nc in item_df.columns:
-                    irow = item_df[item_df[nc] == sel_erp]
-                    if not irow.empty:
-                        # Auto-fill logic
-                        if sel_erp != line["erp_code"]:
-                            for dc in ["Description", "Search_Description", "Product Description", "Product_Description", "Item Description", "Name"]:
-                                if dc in irow.columns: description = str(irow.iloc[0][dc]); break
-                            for vc in ["Vendor_Item_No", "VendorItemNo", "Vendor Item No", "Vendor_No"]:
-                                if vc in irow.columns: vendor_item_no = str(irow.iloc[0][vc]); break
-                            for pc in ["Quoting_Price_WIN", "Unit_Price", "Last_Direct_Cost"]:
-                                if pc in irow.columns:
-                                    try: item_price = float(irow.iloc[0][pc])
-                                    except: pass
-                                    break
-                            # Update session state correctly for widgets
-                            st.session_state.line_items[i]["erp_code"] = sel_erp
-                            st.session_state.line_items[i]["vendor_item_no"] = vendor_item_no
-                            # We keep price as None if the user wants to type it, or auto-fill if preferred.
-                            st.session_state.line_items[i]["price_before_gst"] = None
-                            st.session_state.line_items[i]["description"] = description
-                            st.rerun()
-                        break
-        
+            if is_new:
+                # Show a badge + button to switch back
+                st.markdown("<span style='font-size:11px;color:#f59e0b;font-weight:600'>✏️ NEW ITEM</span>", unsafe_allow_html=True)
+                if st.button("↩ Select from list", key=f"back_list_{i}", use_container_width=True):
+                    st.session_state.line_items[i]["is_new_item"] = False
+                    st.session_state.line_items[i]["erp_code"]    = ""
+                    st.rerun()
+            else:
+                # Determine current selection index
+                current_label = _label_for_erp(line["erp_code"]) if line["erp_code"] else _SEARCH_SENTINEL
+                try:
+                    sel_idx = search_options.index(current_label)
+                except ValueError:
+                    sel_idx = 0
+
+                chosen_label = st.selectbox(
+                    f"Item {i+1}",
+                    search_options,
+                    index=sel_idx,
+                    key=f"item_sel_{i}",
+                    label_visibility="collapsed",
+                )
+
+                # Handle NEW ITEM sentinel
+                if chosen_label == _NEW_SENTINEL:
+                    st.session_state.line_items[i]["is_new_item"]    = True
+                    st.session_state.line_items[i]["erp_code"]       = "NEW"
+                    st.session_state.line_items[i]["vendor_item_no"] = ""
+                    st.session_state.line_items[i]["description"]    = ""
+                    st.session_state.line_items[i]["price_before_gst"] = 0.0
+                    st.session_state.line_items[i]["gst_percent"]    = 18.0
+                    st.rerun()
+
+                # Auto-fill when a known item is newly chosen
+                elif chosen_label in item_lookup:
+                    if chosen_label != _label_for_erp(line["erp_code"]):
+                        data = item_lookup[chosen_label]
+                        st.session_state.line_items[i].update({
+                            "erp_code":         data["erp_code"],
+                            "vendor_item_no":   data["vendor_item_no"],
+                            "description":      data["description"],
+                            "price_before_gst": data["price_before_gst"],
+                            "gst_percent":      data["gst_percent"],
+                            "is_new_item":      False,
+                        })
+                        st.rerun()
+
+        # ── Resolve live values from session state (post any rerun) ──
+        live = st.session_state.line_items[i]
+        is_new = live.get("is_new_item", False)
+
+        # ── Vendor Item No ─────────────────────────────────────
         with c2:
-            st.text_input(f"VItem {i}", value=vendor_item_no, disabled=True, label_visibility="collapsed")
+            if is_new:
+                vin_input = st.text_input(
+                    f"VIN {i}", value=live.get("vendor_item_no", ""),
+                    placeholder="Vendor Item No *",
+                    key=f"vin_{i}", label_visibility="collapsed"
+                )
+            else:
+                vin_input = live.get("vendor_item_no", "")
+                st.text_input(f"VIN {i}", value=vin_input, disabled=True, label_visibility="collapsed")
+
+        # ── Description ────────────────────────────────────────
         with c3:
-            st.text_input(f"Desc {i}", value=description, disabled=True, label_visibility="collapsed")
+            if is_new:
+                desc_input = st.text_input(
+                    f"Desc {i}", value=live.get("description", ""),
+                    placeholder="Product Description *",
+                    key=f"desc_{i}", label_visibility="collapsed"
+                )
+            else:
+                desc_input = live.get("description", "")
+                st.text_input(f"Desc {i}", value=desc_input, disabled=True, label_visibility="collapsed")
+
+        # ── Qty ────────────────────────────────────────────────
         with c4:
-            qty_val = line["qty"]
-            qty = st.number_input(f"Qty {i}", min_value=0, value=qty_val, step=1, key=f"qty_{i}", label_visibility="collapsed")
+            qty = st.number_input(
+                f"Qty {i}",
+                min_value=0,
+                value=int(live.get("qty") or 1),
+                step=1,
+                key=f"qty_{i}",
+                label_visibility="collapsed",
+            )
+
+        # ── Price (always editable — PO-level override) ────────
         with c5:
-            price_val = line["price_before_gst"]
-            price = st.number_input(f"Price {i}", min_value=0.0, value=price_val, step=0.01, key=f"price_{i}", label_visibility="collapsed")
+            price = st.number_input(
+                f"Price {i}",
+                min_value=0.0,
+                value=float(live.get("price_before_gst") or 0.0),
+                step=0.01,
+                format="%.2f",
+                key=f"price_{i}",
+                label_visibility="collapsed",
+            )
+
+        # ── GST % (always editable) ────────────────────────────
         with c6:
-            gst_p = st.number_input(f"GST% {i}", min_value=0.0, max_value=100.0, value=float(line["gst_percent"]), step=0.1, key=f"gstp_{i}", label_visibility="collapsed")
-        
-        # Handle blank (None) values for calculations
-        safe_price = price if price is not None else 0.0
-        safe_qty = qty if qty is not None else 0
-        
-        price_inc_gst = safe_price * (1 + gst_p/100)
+            gst_p = st.number_input(
+                f"GST% {i}",
+                min_value=0.0,
+                max_value=100.0,
+                value=float(live.get("gst_percent") or 18.0),
+                step=0.5,
+                format="%.1f",
+                key=f"gstp_{i}",
+                label_visibility="collapsed",
+            )
+
+        # ── Computed totals ────────────────────────────────────
+        safe_qty   = qty   if qty   else 0
+        safe_price = price if price else 0.0
+        price_inc_gst       = safe_price * (1 + gst_p / 100)
         line_total_before_gst = safe_qty * safe_price
-        line_total_inc_gst = safe_qty * price_inc_gst
-        
+        line_total_inc_gst  = safe_qty * price_inc_gst
+
         with c7:
-            st.text_input(f"TotalIncGST {i}", value=f"{line_total_inc_gst:,.2f}", disabled=True, label_visibility="collapsed")
+            st.text_input(
+                f"Total {i}",
+                value=f"₹{line_total_inc_gst:,.2f}",
+                disabled=True,
+                label_visibility="collapsed",
+            )
+
         with c8:
+            st.markdown("<div style='padding-top:28px'>", unsafe_allow_html=True)
             if st.button("❌", key=f"remove_{i}"):
                 items_to_remove.append(i)
+            st.markdown("</div>", unsafe_allow_html=True)
 
-        # Keep session state in sync
+        # ── Per-row validation ─────────────────────────────────
+        row_erp  = live["erp_code"] if not is_new else "NEW"
+        row_vin  = vin_input  if is_new else live.get("vendor_item_no", "")
+        row_desc = desc_input if is_new else live.get("description", "")
+
+        row_errors = []
+        if not row_vin.strip():
+            row_errors.append("Vendor Item No is required")
+        if safe_qty <= 0:
+            row_errors.append("Qty must be > 0")
+        if safe_price <= 0:
+            row_errors.append("Price must be > 0")
+        if row_errors:
+            line_errors.append(f"Row {i+1}: " + " • ".join(row_errors))
+
+        # ── Sync session state ─────────────────────────────────
         st.session_state.line_items[i] = {
-            "erp_code": sel_erp,
-            "vendor_item_no": vendor_item_no,
-            "description": description,
-            "qty": qty,
+            "erp_code":         row_erp,
+            "vendor_item_no":   row_vin,
+            "description":      row_desc,
+            "qty":              qty,
             "price_before_gst": price,
-            "gst_percent": gst_p,
-            "remarks": line.get("remarks", "")
+            "gst_percent":      gst_p,
+            "remarks":          live.get("remarks", ""),
+            "is_new_item":      is_new,
         }
-        
-        if sel_erp != "-- Select --":
+
+        # ── Accumulate saving data (both existing and new items) ──
+        if row_erp and row_vin.strip():
             line_data_for_saving.append({
-                "S.No": i + 1,
-                "ERP Code": sel_erp,
-                "Vendor Item No": vendor_item_no,
-                "Product Description": description,
-                "Qty": safe_qty,
-                "Price Before GST": safe_price,
-                "GST %": gst_p,
-                "Price Inc. GST": price_inc_gst,
-                "Remarks": line.get("remarks", ""),
+                "S.No":                 i + 1,
+                "ERP Code":             row_erp,
+                "Vendor Item No":       row_vin,
+                "Product Description":  row_desc,
+                "Qty":                  safe_qty,
+                "Price Before GST":     safe_price,
+                "GST %":                gst_p,
+                "Price Inc. GST":       price_inc_gst,
+                "Remarks":              live.get("remarks", ""),
                 "line_total_before_gst": line_total_before_gst,
-                "line_total_inc_gst": safe_qty * price_inc_gst
+                "line_total_inc_gst":   line_total_inc_gst,
             })
+
+    # ── Show per-row validation warnings inline ────────────────
+    if line_errors:
+        for err in line_errors:
+            st.warning(f"⚠️ {err}")
 
     for idx in reversed(items_to_remove):
         st.session_state.line_items.pop(idx)
@@ -1318,7 +1486,9 @@ def page_create_quote():
         if selected_vendor == "-- Select Vendor --":
             errors.append("Please select a Vendor.")
         if not line_data_for_saving:
-            errors.append("Add at least one valid line item.")
+            errors.append("Add at least one valid line item (Vendor Item No + Qty > 0 + Price > 0).")
+        if line_errors:
+            errors.extend(line_errors)
 
         if errors:
             for e in errors:
