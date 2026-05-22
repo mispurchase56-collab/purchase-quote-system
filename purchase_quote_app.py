@@ -1502,6 +1502,8 @@ def page_create_quote():
             st.success("✅ Already submitted")
 
     if submit and not already_submitted:
+        # ── LOCK immediately on first click to prevent any duplicate submissions ──
+        st.session_state["_quote_submitted"] = True
         errors = []
         if not salesperson.strip():
             errors.append("Salesperson Name is required.")
@@ -1513,6 +1515,8 @@ def page_create_quote():
             errors.extend(line_errors)
 
         if errors:
+            # Validation failed — unlock the button so user can fix and retry
+            st.session_state["_quote_submitted"] = False
             for e in errors:
                 st.error(e)
         else:
@@ -1588,11 +1592,13 @@ def page_create_quote():
                 new_df = new_df[REQUIRED_COLS]
                 
                 if save_quotes(new_df, is_edit=edit_mode, quote_no=quote_no):
-                    st.session_state["_quote_submitted"] = True
                     st.success(f"✅ Quote **{quote_no}** {'updated' if edit_mode else 'submitted'} successfully!")
                     st.session_state.submitted_quote_no = quote_no
                     st.cache_data.clear()
                     quotes_df = load_quotes()
+                else:
+                    # Save failed — unlock so user can retry
+                    st.session_state["_quote_submitted"] = False
 
         # ── Post-Submit / Edit Actions (Email & Download) ────────
     show_actions_for = quote_no if edit_mode else st.session_state.get("submitted_quote_no")
