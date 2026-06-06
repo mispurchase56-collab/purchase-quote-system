@@ -1039,7 +1039,16 @@ def page_create_quote():
             if "submitted_quote_no" in st.session_state:
                 del st.session_state.submitted_quote_no
 
-    quote_no = sel_quote_to_edit if edit_mode else next_quote_number(quotes_df)
+    if edit_mode:
+        quote_no = sel_quote_to_edit
+    else:
+        # Freeze quote number in session state once generated.
+        # Without this, clearing the cache after a successful save causes
+        # next_quote_number() to return an incremented number on the next rerun,
+        # making the submit key look "new" and re-enabling the button.
+        if "current_new_quote_no" not in st.session_state:
+            st.session_state["current_new_quote_no"] = next_quote_number(quotes_df)
+        quote_no = st.session_state["current_new_quote_no"]
 
     # ── Header section ───────────────────────────────────────
     st.markdown("---")
@@ -1232,6 +1241,9 @@ def page_create_quote():
             st.session_state.line_items = []
             if "submitted_quote_no" in st.session_state:
                 del st.session_state.submitted_quote_no
+            # Reset frozen quote number so a fresh number is generated next time
+            if "current_new_quote_no" in st.session_state:
+                del st.session_state["current_new_quote_no"]
     with col_hint:
         st.caption("💡 Search by ERP Code / Vendor Item No / Description  •  Choose **'NEW ITEM'** to enter an unlisted item manually")
 
@@ -1502,7 +1514,8 @@ def page_create_quote():
         )
     with sb2:
         if already_submitted:
-            st.success("✅ Already submitted")
+            submitted_qno = st.session_state.get("submitted_quote_no", quote_no)
+            st.success(f"✅ Quote **{submitted_qno}** submitted successfully!")
 
     if submit and not already_submitted:
         errors = []
@@ -1592,10 +1605,12 @@ def page_create_quote():
                 
                 if save_quotes(new_df, is_edit=edit_mode, quote_no=quote_no):
                     st.session_state["submitted_quote_keys"].add(_submit_key)
-                    st.success(f"✅ Quote **{quote_no}** {'updated' if edit_mode else 'submitted'} successfully!")
+                    # Store the submitted quote number BEFORE rerun so actions section shows
                     st.session_state.submitted_quote_no = quote_no
                     st.cache_data.clear()
-                    quotes_df = load_quotes()
+                    # CRITICAL: rerun immediately so the button re-renders as disabled
+                    # before any further user interaction can trigger another save.
+                    st.rerun()
 
         # ── Post-Submit / Edit Actions (Email & Download) ────────
     show_actions_for = quote_no if edit_mode else st.session_state.get("submitted_quote_no")
