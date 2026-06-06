@@ -1036,7 +1036,6 @@ def page_create_quote():
         if "last_loaded_quote" in st.session_state:
             del st.session_state.last_loaded_quote
             st.session_state.line_items = []
-            st.session_state["_quote_submitted"] = False
             if "submitted_quote_no" in st.session_state:
                 del st.session_state.submitted_quote_no
 
@@ -1483,15 +1482,19 @@ def page_create_quote():
         update_reason = st.text_input("📝 Reason for Update / General Remarks", value="", placeholder="e.g., Price changed by vendor, added new items, etc.")
         st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── Submission guard: reset flag when quote context changes ──
-    _submit_key = f"submitted__{quote_no}__{edit_mode}"
-    if st.session_state.get("_last_submit_key") != _submit_key:
-        st.session_state["_last_submit_key"] = _submit_key
-        st.session_state["_quote_submitted"] = False
+    # ── Submission guard: track every successfully saved quote_no in a set ──
+    # Using a set of saved quote keys is robust — it never resets on widget
+    # interactions (unlike a boolean flag that gets cleared by _last_submit_key
+    # comparisons whenever any widget triggers a Streamlit rerun).
+    if "submitted_quote_keys" not in st.session_state:
+        st.session_state["submitted_quote_keys"] = set()
+
+    # A unique key per quote + mode so editing the same quote again is allowed
+    _submit_key = f"{quote_no}__{'edit' if edit_mode else 'new'}"
+    already_submitted = _submit_key in st.session_state["submitted_quote_keys"]
 
     sb1, sb2, sb3 = st.columns([1, 1.5, 3.5])
     with sb1:
-        already_submitted = st.session_state.get("_quote_submitted", False)
         submit = st.button(
             "💾 Submit Quote",
             use_container_width=True,
@@ -1588,7 +1591,7 @@ def page_create_quote():
                 new_df = new_df[REQUIRED_COLS]
                 
                 if save_quotes(new_df, is_edit=edit_mode, quote_no=quote_no):
-                    st.session_state["_quote_submitted"] = True
+                    st.session_state["submitted_quote_keys"].add(_submit_key)
                     st.success(f"✅ Quote **{quote_no}** {'updated' if edit_mode else 'submitted'} successfully!")
                     st.session_state.submitted_quote_no = quote_no
                     st.cache_data.clear()
